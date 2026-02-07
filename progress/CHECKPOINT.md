@@ -17,22 +17,22 @@
 
 ## 2) Avancement
 
-- Milestone en cours: `M3`
+- Milestone en cours: `M4`
 - Derniere etape terminee:
-  - M2 backend: `setContributionPolicy`, `recordPayment`, maj `contributionUpToDate`
-  - M2 frontend: ecran Cotisations admin + historique paiements
+  - M3 backend: `create/updateCondition`, `validateCondition`, `computeEligibility`
+  - M3 frontend: page Conditions admin + page Mon eligibilite membre
   - validations OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`
 - Prochaine etape immediate:
-  - demarrer M3 (conditions + validation + calcul eligibilite)
+  - demarrer M4 (elections + candidats + cycle de vie)
 
 ---
 
 ## 3) Taches immediates (ordre de reprise)
 
-1. Ajouter les fonctions M3: `createCondition`, `updateCondition`, `validateCondition`, `computeEligibility`.
-2. Ajouter les ecrans M3 (catalogue conditions, checklist membre).
-3. Integrer eligibilite dans les flux election/vote.
-4. Relancer validation complete et commit M3.
+1. Ajouter les fonctions M4: `createElection`, `updateElection`, `openElection`, `closeElection`, `addCandidate`, `validateCandidate`, `removeCandidate`.
+2. Ajouter les ecrans M4: gestion elections + candidats.
+3. Integrer verrouillage post-ouverture et controles d'eligibilite candidat.
+4. Relancer validation complete et commit M4.
 
 ---
 

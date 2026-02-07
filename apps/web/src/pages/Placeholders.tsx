@@ -25,9 +25,16 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { callFunction, getErrorMessage } from "../api/callables";
-import { fetchActiveContributionPolicy, fetchMembers, fetchPayments, fetchSections } from "../api/firestoreQueries";
+import {
+  fetchActiveContributionPolicy,
+  fetchConditions,
+  fetchMemberConditions,
+  fetchMembers,
+  fetchPayments,
+  fetchSections,
+} from "../api/firestoreQueries";
 import { useAuth } from "../hooks/useAuth";
-import type { Member, PaymentRecord, Section } from "../types/models";
+import type { Condition, Member, MemberCondition, PaymentRecord, Section } from "../types/models";
 
 type PlaceholderPageProps = {
   title: string;
@@ -41,6 +48,7 @@ const queryKeys = {
   members: ["members"] as const,
   policy: ["policy"] as const,
   payments: ["payments"] as const,
+  conditions: ["conditions"] as const,
 };
 
 function PlaceholderPage({ title, subtitle, actionLabel, loading = false }: PlaceholderPageProps) {
@@ -141,12 +149,44 @@ export function MemberProfilePage() {
 }
 
 export function MemberEligibilityPage() {
+  const { user } = useAuth();
+  const eligibilityQuery = useQuery({
+    queryKey: ["eligibility", user?.uid],
+    queryFn: async () => {
+      if (!user) return null;
+      return callFunction("computeEligibility", {
+        memberId: user.uid,
+      }) as Promise<{
+        eligible: boolean;
+        reasons: Array<{ condition: string; met: boolean; detail: string }>;
+      }>;
+    },
+    enabled: Boolean(user),
+  });
+
   return (
-    <PlaceholderPage
-      title="Mon eligibilite"
-      subtitle="Checklist eligibilite detaillee (M3)."
-      actionLabel="Contacter admin"
-    />
+    <Stack spacing={2}>
+      <Typography variant="h4">Mon eligibilite</Typography>
+      {eligibilityQuery.isLoading ? <Skeleton height={120} /> : null}
+      {eligibilityQuery.error ? <Alert severity="error">{getErrorMessage(eligibilityQuery.error)}</Alert> : null}
+      {eligibilityQuery.data ? (
+        <Alert severity={eligibilityQuery.data.eligible ? "success" : "warning"}>
+          {eligibilityQuery.data.eligible ? "Vous etes eligible." : "Vous n'etes pas encore eligible."}
+        </Alert>
+      ) : null}
+      <Card>
+        <CardContent>
+          <Stack spacing={1.5}>
+            {(eligibilityQuery.data?.reasons ?? []).map((reason) => (
+              <Alert
+                key={reason.condition}
+                severity={reason.met ? "success" : "info"}
+              >{`${reason.condition}: ${reason.detail}`}</Alert>
+            ))}
+          </Stack>
+        </CardContent>
+      </Card>
+    </Stack>
   );
 }
 
@@ -676,6 +716,277 @@ export function AdminMembersPage() {
           </Button>
         </DialogActions>
       </Dialog>
+    </Stack>
+  );
+}
+
+export function AdminConditionsPage() {
+  const { role } = useAuth();
+  const queryClient = useQueryClient();
+  const conditionsQuery = useQuery({
+    queryKey: queryKeys.conditions,
+    queryFn: fetchConditions,
+  });
+  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [type, setType] = useState<Condition["type"]>("checkbox");
+  const [validityDuration, setValidityDuration] = useState("0");
+  const [selectedMember, setSelectedMember] = useState("");
+  const [selectedCondition, setSelectedCondition] = useState("");
+  const [validationState, setValidationState] = useState<"valid" | "invalid">("valid");
+  const [note, setNote] = useState("");
+
+  const memberConditionsQuery = useQuery({
+    queryKey: ["memberConditions", selectedMember],
+    queryFn: () => fetchMemberConditions(selectedMember),
+    enabled: Boolean(selectedMember),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      callFunction("createCondition", {
+        name,
+        description,
+        type,
+        validityDuration: Number(validityDuration),
+      }),
+    onSuccess: async () => {
+      setError(null);
+      setName("");
+      setDescription("");
+      setType("checkbox");
+      setValidityDuration("0");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.conditions });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ conditionId, updates }: { conditionId: string; updates: Record<string, unknown> }) =>
+      callFunction("updateCondition", {
+        conditionId,
+        updates,
+      }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.conditions });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const validateMutation = useMutation({
+    mutationFn: () =>
+      callFunction("validateCondition", {
+        memberId: selectedMember,
+        conditionId: selectedCondition,
+        validated: validationState === "valid",
+        note,
+      }),
+    onSuccess: async () => {
+      setError(null);
+      setNote("");
+      await queryClient.invalidateQueries({ queryKey: ["memberConditions", selectedMember] });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const conditionLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    conditionsQuery.data?.forEach((condition) => map.set(condition.id, condition.name));
+    return map;
+  }, [conditionsQuery.data]);
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="h4">Conditions d'eligibilite</Typography>
+      {error ? <Alert severity="error">{error}</Alert> : null}
+
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="h6">Catalogue conditions</Typography>
+            {role === "superadmin" ? (
+              <>
+                <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                  <TextField label="Nom" value={name} onChange={(event) => setName(event.target.value)} fullWidth />
+                  <TextField
+                    label="Description"
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    fullWidth
+                  />
+                </Stack>
+                <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                  <FormControl fullWidth>
+                    <InputLabel id="condition-type">Type</InputLabel>
+                    <Select
+                      labelId="condition-type"
+                      label="Type"
+                      value={type}
+                      onChange={(event) => setType(event.target.value as Condition["type"])}
+                    >
+                      <MenuItem value="checkbox">checkbox</MenuItem>
+                      <MenuItem value="date">date</MenuItem>
+                      <MenuItem value="amount">amount</MenuItem>
+                      <MenuItem value="file">file</MenuItem>
+                      <MenuItem value="text">text</MenuItem>
+                    </Select>
+                  </FormControl>
+                  <TextField
+                    label="Duree validite (jours, 0=illimite)"
+                    type="number"
+                    value={validityDuration}
+                    onChange={(event) => setValidityDuration(event.target.value)}
+                    fullWidth
+                  />
+                </Stack>
+                <Box>
+                  <Button
+                    variant="contained"
+                    onClick={() => createMutation.mutate()}
+                    disabled={createMutation.isPending || !name || !description}
+                  >
+                    Creer la condition
+                  </Button>
+                </Box>
+              </>
+            ) : (
+              <Alert severity="info">Seul un superadmin peut creer/modifier le catalogue.</Alert>
+            )}
+
+            {conditionsQuery.isLoading ? <Skeleton height={120} /> : null}
+            {(conditionsQuery.data?.length ?? 0) > 0 ? (
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Nom</TableCell>
+                    <TableCell>Type</TableCell>
+                    <TableCell>Validite</TableCell>
+                    <TableCell>Active</TableCell>
+                    <TableCell align="right">Action</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {conditionsQuery.data?.map((condition) => (
+                    <TableRow key={condition.id}>
+                      <TableCell>{condition.name}</TableCell>
+                      <TableCell>{condition.type}</TableCell>
+                      <TableCell>{condition.validityDuration ?? "illimite"}</TableCell>
+                      <TableCell>{condition.isActive ? "oui" : "non"}</TableCell>
+                      <TableCell align="right">
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={role !== "superadmin" || updateMutation.isPending}
+                          onClick={() =>
+                            updateMutation.mutate({
+                              conditionId: condition.id,
+                              updates: { isActive: !condition.isActive },
+                            })
+                          }
+                        >
+                          {condition.isActive ? "Desactiver" : "Activer"}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : null}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="h6">Validation des conditions membre</Typography>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <FormControl fullWidth>
+                <InputLabel id="cond-member">Membre</InputLabel>
+                <Select
+                  labelId="cond-member"
+                  label="Membre"
+                  value={selectedMember}
+                  onChange={(event) => setSelectedMember(event.target.value)}
+                >
+                  {membersQuery.data?.map((member) => (
+                    <MenuItem key={member.id} value={member.id}>
+                      {`${member.firstName} ${member.lastName} - ${member.email}`}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl fullWidth>
+                <InputLabel id="cond-condition">Condition</InputLabel>
+                <Select
+                  labelId="cond-condition"
+                  label="Condition"
+                  value={selectedCondition}
+                  onChange={(event) => setSelectedCondition(event.target.value)}
+                >
+                  {conditionsQuery.data?.map((condition) => (
+                    <MenuItem key={condition.id} value={condition.id}>
+                      {condition.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl fullWidth>
+                <InputLabel id="cond-state">Etat</InputLabel>
+                <Select
+                  labelId="cond-state"
+                  label="Etat"
+                  value={validationState}
+                  onChange={(event) => setValidationState(event.target.value as "valid" | "invalid")}
+                >
+                  <MenuItem value="valid">Valider</MenuItem>
+                  <MenuItem value="invalid">Invalider</MenuItem>
+                </Select>
+              </FormControl>
+            </Stack>
+            <TextField label="Note" value={note} onChange={(event) => setNote(event.target.value)} fullWidth />
+            <Box>
+              <Button
+                variant="contained"
+                onClick={() => validateMutation.mutate()}
+                disabled={validateMutation.isPending || !selectedMember || !selectedCondition}
+              >
+                Enregistrer la validation
+              </Button>
+            </Box>
+
+            {(memberConditionsQuery.data?.length ?? 0) > 0 ? (
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Condition</TableCell>
+                    <TableCell>Etat</TableCell>
+                    <TableCell>Expire le</TableCell>
+                    <TableCell>Note</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {memberConditionsQuery.data?.map((item: MemberCondition) => (
+                    <TableRow key={item.id}>
+                      <TableCell>{conditionLabel.get(item.conditionId) ?? item.conditionId}</TableCell>
+                      <TableCell>{item.validated ? "Validee" : "Invalide"}</TableCell>
+                      <TableCell>
+                        {item.expiresAt ? item.expiresAt.toDate().toLocaleDateString("fr-FR") : "-"}
+                      </TableCell>
+                      <TableCell>{item.note || "-"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <Alert severity="info">Aucune validation pour ce membre.</Alert>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
     </Stack>
   );
 }

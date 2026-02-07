@@ -34,6 +34,7 @@ export function AdminLayout() {
       { label: "Dashboard", to: "/admin" },
       { label: "Membres", to: "/admin/members" },
       { label: "Sections", to: "/admin/sections" },
+      { label: "Conditions", to: "/admin/conditions" },
       { label: "Cotisations", to: "/admin/contributions" },
       { label: "Elections", to: "/admin/elections" },
       { label: "Logs", to: "/admin/logs" },

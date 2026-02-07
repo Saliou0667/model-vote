@@ -14,6 +14,7 @@ type ActiveContributionPolicy = {
   id: string;
   gracePeriodDays?: number;
 };
+type ConditionType = "checkbox" | "date" | "amount" | "file" | "text";
 
 type RuntimeConfig = {
   app?: {
@@ -167,6 +168,10 @@ async function isContributionUpToDate(memberId: string): Promise<boolean> {
   const due = new Date(periodEnd);
   due.setDate(due.getDate() + graceDays);
   return new Date().getTime() <= due.getTime();
+}
+
+function memberConditionDocId(memberId: string, conditionId: string): string {
+  return `${memberId}_${conditionId}`;
 }
 
 export const ensureMemberProfile = onCall(async (request) => {
@@ -751,4 +756,240 @@ export const recordPayment = onCall(async (request) => {
   });
 
   return ok({ paymentId: paymentRef.id });
+});
+
+export const createCondition = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["superadmin"]);
+
+  const name = requireString(request.data?.name, "name");
+  const description = requireString(request.data?.description, "description");
+  const type = requireEnum<ConditionType>(request.data?.type, "type", ["checkbox", "date", "amount", "file", "text"]);
+  const validityDuration = request.data?.validityDuration;
+  const validityDays =
+    typeof validityDuration === "number" && validityDuration > 0 ? Math.floor(validityDuration) : null;
+
+  const ref = db.collection("conditions").doc();
+  await ref.set({
+    name,
+    description,
+    type,
+    validatedBy: "admin",
+    validityDuration: validityDays,
+    isActive: true,
+    createdBy: actorUid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  await writeAudit({
+    action: "condition.create",
+    actorId: actorUid,
+    actorRole: "superadmin",
+    targetType: "condition",
+    targetId: ref.id,
+    details: { name, type, validityDuration: validityDays },
+  });
+
+  return ok({ conditionId: ref.id });
+});
+
+export const updateCondition = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["superadmin"]);
+
+  const conditionId = requireString(request.data?.conditionId, "conditionId");
+  const updatesInput = request.data?.updates as Record<string, unknown> | undefined;
+  if (!updatesInput) throw new HttpsError("invalid-argument", "Invalid updates.");
+
+  const updates: Record<string, unknown> = {};
+  if (typeof updatesInput.name === "string") updates.name = updatesInput.name.trim();
+  if (typeof updatesInput.description === "string") {
+    updates.description = updatesInput.description.trim();
+  }
+  if (typeof updatesInput.isActive === "boolean") updates.isActive = updatesInput.isActive;
+  if (typeof updatesInput.validityDuration === "number") {
+    updates.validityDuration = Math.floor(updatesInput.validityDuration);
+  }
+
+  if (Object.keys(updates).length === 0) {
+    throw new HttpsError("invalid-argument", "Invalid updates.");
+  }
+
+  const ref = db.collection("conditions").doc(conditionId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "ERROR_CONDITION_NOT_FOUND");
+
+  await ref.update({
+    ...updates,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  await writeAudit({
+    action: "condition.update",
+    actorId: actorUid,
+    actorRole: "superadmin",
+    targetType: "condition",
+    targetId: conditionId,
+    details: { fields: Object.keys(updates) },
+  });
+
+  return ok({ conditionId });
+});
+
+export const validateCondition = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const memberId = requireString(request.data?.memberId, "memberId");
+  const conditionId = requireString(request.data?.conditionId, "conditionId");
+  const validated = Boolean(request.data?.validated);
+  const note = optionalString(request.data?.note) ?? "";
+  const evidence = optionalString(request.data?.evidence) ?? "";
+
+  const memberSnap = await db.collection("members").doc(memberId).get();
+  if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
+  const conditionRef = db.collection("conditions").doc(conditionId);
+  const conditionSnap = await conditionRef.get();
+  if (!conditionSnap.exists) {
+    throw new HttpsError("not-found", "ERROR_CONDITION_NOT_FOUND");
+  }
+
+  const condition = conditionSnap.data() as { validityDuration?: number };
+  let expiresAt: Date | null = null;
+  if (validated && typeof condition.validityDuration === "number") {
+    expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + condition.validityDuration);
+  }
+
+  const docId = memberConditionDocId(memberId, conditionId);
+  await db.collection("memberConditions").doc(docId).set(
+    {
+      memberId,
+      conditionId,
+      validated,
+      validatedBy: actorUid,
+      validatedAt: FieldValue.serverTimestamp(),
+      expiresAt,
+      note,
+      evidence,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  await writeAudit({
+    action: validated ? "condition.validate" : "condition.invalidate",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "condition",
+    targetId: conditionId,
+    details: { memberId, note },
+  });
+
+  return ok({ memberId, conditionId, validated });
+});
+
+export const computeEligibility = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+
+  const memberId = requireString(request.data?.memberId, "memberId");
+  const electionId = optionalString(request.data?.electionId);
+
+  const isSelf = actorUid === memberId;
+  if (!isSelf) requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const memberSnap = await db.collection("members").doc(memberId).get();
+  if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
+  const member = memberSnap.data() as {
+    status?: MemberStatus;
+    joinedAt?: { toDate?: () => Date };
+    sectionId?: string;
+  };
+
+  const reasons: Array<{
+    condition: string;
+    met: boolean;
+    detail: string;
+  }> = [];
+
+  const statusOk = member.status === "active";
+  reasons.push({
+    condition: "member_status",
+    met: statusOk,
+    detail: statusOk ? "Statut actif" : "Le membre doit etre actif",
+  });
+
+  const contributionOk = await isContributionUpToDate(memberId);
+  reasons.push({
+    condition: "contribution",
+    met: contributionOk,
+    detail: contributionOk ? "Cotisation a jour" : "Cotisation en retard",
+  });
+
+  let requiredConditionIds: string[] = [];
+  if (electionId) {
+    const electionSnap = await db.collection("elections").doc(electionId).get();
+    if (!electionSnap.exists) {
+      throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+    }
+    const election = electionSnap.data() as {
+      minSeniority?: number;
+      allowedSectionIds?: string[] | null;
+      voterConditionIds?: string[];
+    };
+
+    const joinedAtDate = member.joinedAt?.toDate?.();
+    const minSeniorityDays = Number(election.minSeniority ?? 0);
+    const seniorityOk =
+      minSeniorityDays <= 0 ||
+      Boolean(joinedAtDate && (Date.now() - joinedAtDate.getTime()) / 86400000 >= minSeniorityDays);
+    reasons.push({
+      condition: "seniority",
+      met: seniorityOk,
+      detail: seniorityOk ? "Anciennete conforme" : `Anciennete insuffisante (minimum ${minSeniorityDays} jours)`,
+    });
+
+    const allowedSections = election.allowedSectionIds ?? null;
+    const sectionOk =
+      !allowedSections || allowedSections.length === 0 ? true : allowedSections.includes(member.sectionId ?? "");
+    reasons.push({
+      condition: "section",
+      met: sectionOk,
+      detail: sectionOk ? "Section autorisee" : "Section non autorisee",
+    });
+
+    requiredConditionIds = election.voterConditionIds ?? [];
+  } else {
+    const activeConditions = await db.collection("conditions").where("isActive", "==", true).get();
+    requiredConditionIds = activeConditions.docs.map((doc) => doc.id);
+  }
+
+  for (const conditionId of requiredConditionIds) {
+    const docId = memberConditionDocId(memberId, conditionId);
+    const mcSnap = await db.collection("memberConditions").doc(docId).get();
+    const mc = mcSnap.data() as {
+      validated?: boolean;
+      expiresAt?: { toDate?: () => Date };
+    };
+    const expiresAt = mc?.expiresAt?.toDate?.();
+    const notExpired = !expiresAt || expiresAt.getTime() >= Date.now();
+    const met = Boolean(mcSnap.exists && mc.validated && notExpired);
+    reasons.push({
+      condition: `condition_${conditionId}`,
+      met,
+      detail: met ? "Condition validee" : "Condition non validee ou expiree",
+    });
+  }
+
+  const eligible = reasons.every((reason) => reason.met);
+  return ok({ eligible, reasons });
 });

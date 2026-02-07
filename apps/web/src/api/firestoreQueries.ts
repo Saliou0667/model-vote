@@ -1,6 +1,6 @@
 import { collection, getDocs, orderBy, query, where, type DocumentData } from "firebase/firestore";
 import { db } from "../config/firebase";
-import type { ContributionPolicy, Member, PaymentRecord, Section } from "../types/models";
+import type { Condition, ContributionPolicy, Member, MemberCondition, PaymentRecord, Section } from "../types/models";
 
 function toSection(id: string, data: DocumentData): Section {
   return {
@@ -76,6 +76,42 @@ export async function fetchPayments(limit = 100): Promise<PaymentRecord[]> {
       note: String(data.note ?? ""),
       recordedBy: String(data.recordedBy ?? ""),
       recordedAt: data.recordedAt,
+    };
+  });
+}
+
+export async function fetchConditions(): Promise<Condition[]> {
+  const q = query(collection(db, "conditions"), orderBy("name", "asc"));
+  const snap = await getDocs(q);
+  return snap.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      name: String(data.name ?? ""),
+      description: String(data.description ?? ""),
+      type: (data.type ?? "checkbox") as Condition["type"],
+      validityDuration: typeof data.validityDuration === "number" ? data.validityDuration : null,
+      isActive: Boolean(data.isActive),
+    };
+  });
+}
+
+export async function fetchMemberConditions(memberId: string): Promise<MemberCondition[]> {
+  if (!memberId) return [];
+  const q = query(collection(db, "memberConditions"), where("memberId", "==", memberId), orderBy("updatedAt", "desc"));
+  const snap = await getDocs(q);
+  return snap.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      memberId: String(data.memberId ?? ""),
+      conditionId: String(data.conditionId ?? ""),
+      validated: Boolean(data.validated),
+      validatedBy: String(data.validatedBy ?? ""),
+      validatedAt: data.validatedAt,
+      expiresAt: data.expiresAt ?? null,
+      note: String(data.note ?? ""),
+      evidence: String(data.evidence ?? ""),
     };
   });
 }

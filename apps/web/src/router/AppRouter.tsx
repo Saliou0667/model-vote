@@ -6,6 +6,7 @@ import { LoginPage, RegisterPage, VerifyEmailPage } from "../pages/AuthPages";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import {
   AdminContributionsPage,
+  AdminConditionsPage,
   AdminDashboardPage,
   AdminElectionsPage,
   AdminLogsPage,
@@ -68,6 +69,7 @@ export function AppRouter() {
         <Route index element={<AdminDashboardPage />} />
         <Route path="members" element={<AdminMembersPage />} />
         <Route path="sections" element={<AdminSectionsPage />} />
+        <Route path="conditions" element={<AdminConditionsPage />} />
         <Route path="contributions" element={<AdminContributionsPage />} />
         <Route path="elections" element={<AdminElectionsPage />} />
         <Route path="logs" element={<AdminLogsPage />} />

@@ -47,3 +47,24 @@ export type PaymentRecord = {
   recordedBy?: string;
   recordedAt?: Timestamp;
 };
+
+export type Condition = {
+  id: string;
+  name: string;
+  description: string;
+  type: "checkbox" | "date" | "amount" | "file" | "text";
+  validityDuration?: number | null;
+  isActive: boolean;
+};
+
+export type MemberCondition = {
+  id: string;
+  memberId: string;
+  conditionId: string;
+  validated: boolean;
+  validatedBy?: string;
+  validatedAt?: Timestamp;
+  expiresAt?: Timestamp | null;
+  note?: string;
+  evidence?: string;
+};
