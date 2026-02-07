@@ -1,6 +1,6 @@
-import { collection, getDocs, orderBy, query, type DocumentData } from "firebase/firestore";
+import { collection, getDocs, orderBy, query, where, type DocumentData } from "firebase/firestore";
 import { db } from "../config/firebase";
-import type { Member, Section } from "../types/models";
+import type { ContributionPolicy, Member, PaymentRecord, Section } from "../types/models";
 
 function toSection(id: string, data: DocumentData): Section {
   return {
@@ -24,6 +24,7 @@ function toMember(id: string, data: DocumentData): Member {
     role: (data.role ?? "member") as Member["role"],
     status: (data.status ?? "pending") as Member["status"],
     emailVerified: Boolean(data.emailVerified),
+    contributionUpToDate: Boolean(data.contributionUpToDate),
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,
   };
@@ -39,4 +40,42 @@ export async function fetchMembers(): Promise<Member[]> {
   const q = query(collection(db, "members"), orderBy("createdAt", "desc"));
   const snap = await getDocs(q);
   return snap.docs.map((doc) => toMember(doc.id, doc.data()));
+}
+
+export async function fetchActiveContributionPolicy(): Promise<ContributionPolicy | null> {
+  const q = query(collection(db, "contributionPolicies"), where("isActive", "==", true));
+  const snap = await getDocs(q);
+  if (snap.empty) return null;
+  const doc = snap.docs[0];
+  const data = doc.data();
+  return {
+    id: doc.id,
+    name: String(data.name ?? ""),
+    amount: Number(data.amount ?? 0),
+    currency: String(data.currency ?? "EUR"),
+    periodicity: (data.periodicity ?? "monthly") as ContributionPolicy["periodicity"],
+    gracePeriodDays: Number(data.gracePeriodDays ?? 0),
+    isActive: Boolean(data.isActive),
+  };
+}
+
+export async function fetchPayments(limit = 100): Promise<PaymentRecord[]> {
+  const q = query(collection(db, "payments"), orderBy("recordedAt", "desc"));
+  const snap = await getDocs(q);
+  return snap.docs.slice(0, limit).map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      memberId: String(data.memberId ?? ""),
+      policyId: String(data.policyId ?? ""),
+      amount: Number(data.amount ?? 0),
+      currency: String(data.currency ?? "EUR"),
+      periodStart: data.periodStart,
+      periodEnd: data.periodEnd,
+      reference: String(data.reference ?? ""),
+      note: String(data.note ?? ""),
+      recordedBy: String(data.recordedBy ?? ""),
+      recordedAt: data.recordedAt,
+    };
+  });
 }

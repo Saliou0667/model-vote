@@ -25,9 +25,9 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { callFunction, getErrorMessage } from "../api/callables";
-import { fetchMembers, fetchSections } from "../api/firestoreQueries";
+import { fetchActiveContributionPolicy, fetchMembers, fetchPayments, fetchSections } from "../api/firestoreQueries";
 import { useAuth } from "../hooks/useAuth";
-import type { Member, Section } from "../types/models";
+import type { Member, PaymentRecord, Section } from "../types/models";
 
 type PlaceholderPageProps = {
   title: string;
@@ -39,6 +39,8 @@ type PlaceholderPageProps = {
 const queryKeys = {
   sections: ["sections"] as const,
   members: ["members"] as const,
+  policy: ["policy"] as const,
+  payments: ["payments"] as const,
 };
 
 function PlaceholderPage({ title, subtitle, actionLabel, loading = false }: PlaceholderPageProps) {
@@ -578,6 +580,7 @@ export function AdminMembersPage() {
                   <TableCell>Nom</TableCell>
                   <TableCell>Email</TableCell>
                   <TableCell>Section</TableCell>
+                  <TableCell>Cotisation</TableCell>
                   <TableCell>Role</TableCell>
                   <TableCell>Statut</TableCell>
                   <TableCell align="right">Action</TableCell>
@@ -589,6 +592,7 @@ export function AdminMembersPage() {
                     <TableCell>{`${member.firstName} ${member.lastName}`}</TableCell>
                     <TableCell>{member.email}</TableCell>
                     <TableCell>{sectionLabel.get(member.sectionId ?? "") ?? "-"}</TableCell>
+                    <TableCell>{member.contributionUpToDate ? "A jour" : "En retard"}</TableCell>
                     <TableCell>{member.role}</TableCell>
                     <TableCell>{member.status}</TableCell>
                     <TableCell align="right">
@@ -677,12 +681,265 @@ export function AdminMembersPage() {
 }
 
 export function AdminContributionsPage() {
+  const { role } = useAuth();
+  const queryClient = useQueryClient();
+  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const policyQuery = useQuery({
+    queryKey: queryKeys.policy,
+    queryFn: fetchActiveContributionPolicy,
+  });
+  const paymentsQuery = useQuery({
+    queryKey: queryKeys.payments,
+    queryFn: () => fetchPayments(),
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const [policyName, setPolicyName] = useState("Politique cotisation");
+  const [policyAmount, setPolicyAmount] = useState("10");
+  const [policyCurrency, setPolicyCurrency] = useState("EUR");
+  const [policyPeriodicity, setPolicyPeriodicity] = useState<"monthly" | "quarterly" | "yearly">("monthly");
+  const [policyGraceDays, setPolicyGraceDays] = useState("7");
+
+  const [memberId, setMemberId] = useState("");
+  const [paymentAmount, setPaymentAmount] = useState("10");
+  const [paymentCurrency, setPaymentCurrency] = useState("EUR");
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
+  const [reference, setReference] = useState("");
+  const [note, setNote] = useState("");
+
+  const setPolicyMutation = useMutation({
+    mutationFn: () =>
+      callFunction("setContributionPolicy", {
+        name: policyName,
+        amount: Number(policyAmount),
+        currency: policyCurrency,
+        periodicity: policyPeriodicity,
+        gracePeriodDays: Number(policyGraceDays),
+      }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.policy });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const recordPaymentMutation = useMutation({
+    mutationFn: () =>
+      callFunction("recordPayment", {
+        memberId,
+        amount: Number(paymentAmount),
+        currency: paymentCurrency,
+        periodStart: new Date(`${periodStart}T00:00:00.000Z`).toISOString(),
+        periodEnd: new Date(`${periodEnd}T23:59:59.999Z`).toISOString(),
+        reference,
+        note,
+      }),
+    onSuccess: async () => {
+      setError(null);
+      setReference("");
+      setNote("");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.payments });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.members });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const memberLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    membersQuery.data?.forEach((member) => {
+      map.set(member.id, `${member.firstName} ${member.lastName}`.trim());
+    });
+    return map;
+  }, [membersQuery.data]);
+
+  const canSavePolicy =
+    role === "superadmin" && policyName.length > 0 && Number(policyAmount) > 0 && Number(policyGraceDays) >= 0;
+  const canRecordPayment =
+    memberId.length > 0 && periodStart.length > 0 && periodEnd.length > 0 && Number(paymentAmount) > 0;
+
   return (
-    <PlaceholderPage
-      title="Cotisations"
-      subtitle="Politique + paiements append-only (M2)."
-      actionLabel="Configurer la politique"
-    />
+    <Stack spacing={2}>
+      <Typography variant="h4">Cotisations</Typography>
+      {error ? <Alert severity="error">{error}</Alert> : null}
+
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="h6">Politique active</Typography>
+            {policyQuery.data ? (
+              <Alert severity="info">
+                {`${policyQuery.data.name}: ${policyQuery.data.amount} ${policyQuery.data.currency} (${policyQuery.data.periodicity}, grace ${policyQuery.data.gracePeriodDays} jours)`}
+              </Alert>
+            ) : (
+              <Alert severity="warning">Aucune politique active.</Alert>
+            )}
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField
+                label="Nom politique"
+                value={policyName}
+                onChange={(event) => setPolicyName(event.target.value)}
+                fullWidth
+              />
+              <TextField
+                label="Montant"
+                type="number"
+                value={policyAmount}
+                onChange={(event) => setPolicyAmount(event.target.value)}
+                fullWidth
+              />
+              <TextField
+                label="Devise"
+                value={policyCurrency}
+                onChange={(event) => setPolicyCurrency(event.target.value.toUpperCase())}
+                fullWidth
+              />
+            </Stack>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <FormControl fullWidth>
+                <InputLabel id="policy-periodicity">Periodicite</InputLabel>
+                <Select
+                  labelId="policy-periodicity"
+                  label="Periodicite"
+                  value={policyPeriodicity}
+                  onChange={(event) => setPolicyPeriodicity(event.target.value as "monthly" | "quarterly" | "yearly")}
+                >
+                  <MenuItem value="monthly">Mensuelle</MenuItem>
+                  <MenuItem value="quarterly">Trimestrielle</MenuItem>
+                  <MenuItem value="yearly">Annuelle</MenuItem>
+                </Select>
+              </FormControl>
+              <TextField
+                label="Tolerance (jours)"
+                type="number"
+                value={policyGraceDays}
+                onChange={(event) => setPolicyGraceDays(event.target.value)}
+                fullWidth
+              />
+            </Stack>
+            <Box>
+              <Button
+                variant="contained"
+                onClick={() => setPolicyMutation.mutate()}
+                disabled={!canSavePolicy || setPolicyMutation.isPending}
+              >
+                Enregistrer la politique
+              </Button>
+            </Box>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="h6">Enregistrer un paiement</Typography>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <FormControl fullWidth>
+                <InputLabel id="payment-member">Membre</InputLabel>
+                <Select
+                  labelId="payment-member"
+                  label="Membre"
+                  value={memberId}
+                  onChange={(event) => setMemberId(event.target.value)}
+                >
+                  {membersQuery.data?.map((member) => (
+                    <MenuItem key={member.id} value={member.id}>
+                      {`${member.firstName} ${member.lastName} - ${member.email}`}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <TextField
+                label="Montant"
+                type="number"
+                value={paymentAmount}
+                onChange={(event) => setPaymentAmount(event.target.value)}
+                fullWidth
+              />
+              <TextField
+                label="Devise"
+                value={paymentCurrency}
+                onChange={(event) => setPaymentCurrency(event.target.value.toUpperCase())}
+                fullWidth
+              />
+            </Stack>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField
+                label="Debut periode"
+                type="date"
+                InputLabelProps={{ shrink: true }}
+                value={periodStart}
+                onChange={(event) => setPeriodStart(event.target.value)}
+                fullWidth
+              />
+              <TextField
+                label="Fin periode"
+                type="date"
+                InputLabelProps={{ shrink: true }}
+                value={periodEnd}
+                onChange={(event) => setPeriodEnd(event.target.value)}
+                fullWidth
+              />
+            </Stack>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField
+                label="Reference"
+                value={reference}
+                onChange={(event) => setReference(event.target.value)}
+                fullWidth
+              />
+              <TextField label="Note" value={note} onChange={(event) => setNote(event.target.value)} fullWidth />
+            </Stack>
+            <Box>
+              <Button
+                variant="contained"
+                onClick={() => recordPaymentMutation.mutate()}
+                disabled={!canRecordPayment || recordPaymentMutation.isPending}
+              >
+                Enregistrer le paiement
+              </Button>
+            </Box>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent>
+          <Typography variant="h6" mb={2}>
+            Historique paiements
+          </Typography>
+          {paymentsQuery.isLoading ? <Skeleton height={120} /> : null}
+          {!paymentsQuery.isLoading && (paymentsQuery.data?.length ?? 0) === 0 ? (
+            <Alert severity="info">Aucun paiement enregistre.</Alert>
+          ) : null}
+          {(paymentsQuery.data?.length ?? 0) > 0 ? (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Membre</TableCell>
+                  <TableCell>Montant</TableCell>
+                  <TableCell>Periode</TableCell>
+                  <TableCell>Reference</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {paymentsQuery.data?.map((payment: PaymentRecord) => (
+                  <TableRow key={payment.id}>
+                    <TableCell>{memberLabel.get(payment.memberId) ?? payment.memberId}</TableCell>
+                    <TableCell>{`${payment.amount} ${payment.currency}`}</TableCell>
+                    <TableCell>
+                      {`${payment.periodStart?.toDate().toLocaleDateString("fr-FR")} - ${payment.periodEnd?.toDate().toLocaleDateString("fr-FR")}`}
+                    </TableCell>
+                    <TableCell>{payment.reference || "-"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : null}
+        </CardContent>
+      </Card>
+    </Stack>
   );
 }
 

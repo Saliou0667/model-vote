@@ -21,4 +21,29 @@ export type Member = {
   emailVerified?: boolean;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
+  contributionUpToDate?: boolean;
+};
+
+export type ContributionPolicy = {
+  id: string;
+  name: string;
+  amount: number;
+  currency: string;
+  periodicity: "monthly" | "quarterly" | "yearly";
+  gracePeriodDays: number;
+  isActive: boolean;
+};
+
+export type PaymentRecord = {
+  id: string;
+  memberId: string;
+  policyId: string;
+  amount: number;
+  currency: string;
+  periodStart?: Timestamp;
+  periodEnd?: Timestamp;
+  reference?: string;
+  note?: string;
+  recordedBy?: string;
+  recordedAt?: Timestamp;
 };

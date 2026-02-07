@@ -9,6 +9,11 @@ initializeApp();
 
 type Role = "member" | "admin" | "superadmin";
 type MemberStatus = "pending" | "active" | "suspended";
+type ContributionPeriodicity = "monthly" | "quarterly" | "yearly";
+type ActiveContributionPolicy = {
+  id: string;
+  gracePeriodDays?: number;
+};
 
 type RuntimeConfig = {
   app?: {
@@ -85,6 +90,22 @@ function requireEnum<T extends string>(value: unknown, field: string, allowed: T
   return value as T;
 }
 
+function requireNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) {
+    throw new HttpsError("invalid-argument", `Invalid ${field}.`);
+  }
+  return value;
+}
+
+function requireDate(value: unknown, field: string): Date {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  throw new HttpsError("invalid-argument", `Invalid ${field}.`);
+}
+
 async function getRequesterRole(uid: string): Promise<Role | null> {
   const snap = await db.collection("members").doc(uid).get();
   if (!snap.exists) return null;
@@ -118,6 +139,34 @@ async function ensureSectionExists(sectionId: string): Promise<void> {
 
 function createTempPassword(): string {
   return `${randomUUID()}!Aa1`;
+}
+
+async function getActiveContributionPolicy(): Promise<ActiveContributionPolicy | null> {
+  const snap = await db.collection("contributionPolicies").where("isActive", "==", true).limit(1).get();
+  if (snap.empty) return null;
+  const data = snap.docs[0].data() as { gracePeriodDays?: number };
+  return { id: snap.docs[0].id, gracePeriodDays: data.gracePeriodDays };
+}
+
+async function isContributionUpToDate(memberId: string): Promise<boolean> {
+  const policy = await getActiveContributionPolicy();
+  if (!policy) return false;
+
+  const latestPayment = await db
+    .collection("payments")
+    .where("memberId", "==", memberId)
+    .orderBy("periodEnd", "desc")
+    .limit(1)
+    .get();
+
+  if (latestPayment.empty) return false;
+  const periodEnd = latestPayment.docs[0].data().periodEnd?.toDate?.() as Date | undefined;
+  if (!periodEnd) return false;
+
+  const graceDays = Number(policy.gracePeriodDays ?? 0);
+  const due = new Date(periodEnd);
+  due.setDate(due.getDate() + graceDays);
+  return new Date().getTime() <= due.getTime();
 }
 
 export const ensureMemberProfile = onCall(async (request) => {
@@ -565,4 +614,141 @@ export const updateMember = onCall(async (request) => {
   });
 
   return ok({ memberId });
+});
+
+export const setContributionPolicy = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["superadmin"]);
+
+  const name = requireString(request.data?.name, "name");
+  const amount = requireNumber(request.data?.amount, "amount");
+  const currency = requireString(request.data?.currency, "currency").toUpperCase();
+  const periodicity = requireEnum<ContributionPeriodicity>(request.data?.periodicity, "periodicity", [
+    "monthly",
+    "quarterly",
+    "yearly",
+  ]);
+  const gracePeriodDays = requireNumber(request.data?.gracePeriodDays, "gracePeriodDays");
+
+  if (amount <= 0) throw new HttpsError("invalid-argument", "ERROR_INVALID_AMOUNT");
+  if (gracePeriodDays < 0) {
+    throw new HttpsError("invalid-argument", "ERROR_INVALID_GRACE_PERIOD");
+  }
+
+  const activePolicies = await db.collection("contributionPolicies").where("isActive", "==", true).get();
+  const policyRef = db.collection("contributionPolicies").doc();
+  const batch = db.batch();
+
+  activePolicies.docs.forEach((doc) => {
+    batch.update(doc.ref, {
+      isActive: false,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  batch.set(policyRef, {
+    name,
+    amount,
+    currency,
+    periodicity,
+    gracePeriodDays,
+    isActive: true,
+    createdBy: actorUid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  batch.set(db.collection("auditLogs").doc(), {
+    action: "policy.create",
+    actorId: actorUid,
+    actorRole: "superadmin",
+    targetType: "policy",
+    targetId: policyRef.id,
+    details: {
+      amount,
+      currency,
+      periodicity,
+      gracePeriodDays,
+    },
+    timestamp: FieldValue.serverTimestamp(),
+  });
+
+  if (!activePolicies.empty) {
+    batch.set(db.collection("auditLogs").doc(), {
+      action: "policy.update",
+      actorId: actorUid,
+      actorRole: "superadmin",
+      targetType: "policy",
+      targetId: policyRef.id,
+      details: { previousActiveCount: activePolicies.size },
+      timestamp: FieldValue.serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+  return ok({ policyId: policyRef.id });
+});
+
+export const recordPayment = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const memberId = requireString(request.data?.memberId, "memberId");
+  const amount = requireNumber(request.data?.amount, "amount");
+  const currency = requireString(request.data?.currency, "currency").toUpperCase();
+  const periodStart = requireDate(request.data?.periodStart, "periodStart");
+  const periodEnd = requireDate(request.data?.periodEnd, "periodEnd");
+  const reference = optionalString(request.data?.reference) ?? "";
+  const note = optionalString(request.data?.note) ?? "";
+
+  if (amount <= 0) throw new HttpsError("invalid-argument", "ERROR_INVALID_AMOUNT");
+  if (periodEnd.getTime() < periodStart.getTime()) {
+    throw new HttpsError("invalid-argument", "ERROR_INVALID_PERIOD");
+  }
+
+  const memberSnap = await db.collection("members").doc(memberId).get();
+  if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
+
+  const activePolicy = await getActiveContributionPolicy();
+  if (!activePolicy) {
+    throw new HttpsError("failed-precondition", "ERROR_POLICY_NOT_FOUND");
+  }
+
+  const paymentRef = db.collection("payments").doc();
+  await paymentRef.set({
+    memberId,
+    policyId: activePolicy.id,
+    amount,
+    currency,
+    periodStart,
+    periodEnd,
+    reference,
+    note,
+    recordedBy: actorUid,
+    recordedAt: FieldValue.serverTimestamp(),
+  });
+
+  const upToDate = await isContributionUpToDate(memberId);
+  await db.collection("members").doc(memberId).set(
+    {
+      contributionUpToDate: upToDate,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  await writeAudit({
+    action: "payment.record",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "payment",
+    targetId: paymentRef.id,
+    details: { memberId, amount, currency, periodEnd: periodEnd.toISOString() },
+  });
+
+  return ok({ paymentId: paymentRef.id });
 });

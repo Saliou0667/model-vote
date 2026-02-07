@@ -17,22 +17,22 @@
 
 ## 2) Avancement
 
-- Milestone en cours: `M2`
+- Milestone en cours: `M3`
 - Derniere etape terminee:
-  - M1 backend: `ensureMemberProfile`, `create/update/deleteSection`, `create/updateMember`
-  - M1 frontend: pages Sections, Membres, Mon profil avec appels callable
+  - M2 backend: `setContributionPolicy`, `recordPayment`, maj `contributionUpToDate`
+  - M2 frontend: ecran Cotisations admin + historique paiements
   - validations OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`
 - Prochaine etape immediate:
-  - demarrer M2 (cotisations: politiques + paiements + statut a jour/en retard)
+  - demarrer M3 (conditions + validation + calcul eligibilite)
 
 ---
 
 ## 3) Taches immediates (ordre de reprise)
 
-1. Ajouter les fonctions M2: `setContributionPolicy`, `recordPayment`.
-2. Ajouter la logique de calcul statut cotisation pour affichage membres.
-3. Implementer l'ecran admin Cotisations + integration fiche membre.
-4. Relancer validation complete et commit M2.
+1. Ajouter les fonctions M3: `createCondition`, `updateCondition`, `validateCondition`, `computeEligibility`.
+2. Ajouter les ecrans M3 (catalogue conditions, checklist membre).
+3. Integrer eligibilite dans les flux election/vote.
+4. Relancer validation complete et commit M3.
 
 ---
 
