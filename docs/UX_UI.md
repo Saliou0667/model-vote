@@ -249,7 +249,7 @@ Sidebar permanente (desktop) / Drawer (mobile)
 - Bouton "Promouvoir un membre" → recherche + sélection
 - Action : révoquer rôle admin → confirmation + log
 
-#### Catalogue de Conditions
+#### Catalogue de Conditions (Admin/SuperAdmin)
 
 - Table : nom, type, statut (actif/archivé), date création
 - Bouton "Créer une condition" → Modal formulaire

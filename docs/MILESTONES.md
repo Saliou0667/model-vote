@@ -154,8 +154,8 @@ Conditions paramétrables, validation par admin, calcul d'éligibilité (voter /
 
 ### Livrables
 
-- [ ] Collection `conditions/` : catalogue (SuperAdmin)
-- [ ] Page SuperAdmin : gestion des conditions (table + CRUD)
+- [ ] Collection `conditions/` : catalogue (Admin/SuperAdmin)
+- [ ] Page Admin : gestion des conditions (table + CRUD)
 - [ ] Collection `memberConditions/` : validation par admin
 - [ ] Page admin fiche membre : onglet Conditions (checklist + historique)
 - [ ] Cloud Function : `computeEligibility` (voter + candidater)

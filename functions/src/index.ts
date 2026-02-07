@@ -811,7 +811,7 @@ export const createCondition = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
-  requireAnyRole(actorRole, ["superadmin"]);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const name = requireString(request.data?.name, "name");
   const description = requireString(request.data?.description, "description");
@@ -836,7 +836,7 @@ export const createCondition = onCall(async (request) => {
   await writeAudit({
     action: "condition.create",
     actorId: actorUid,
-    actorRole: "superadmin",
+    actorRole: actorRole ?? "admin",
     targetType: "condition",
     targetId: ref.id,
     details: { name, type, validityDuration: validityDays },
@@ -849,7 +849,7 @@ export const updateCondition = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
-  requireAnyRole(actorRole, ["superadmin"]);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const conditionId = requireString(request.data?.conditionId, "conditionId");
   const updatesInput = request.data?.updates as Record<string, unknown> | undefined;
@@ -881,7 +881,7 @@ export const updateCondition = onCall(async (request) => {
   await writeAudit({
     action: "condition.update",
     actorId: actorUid,
-    actorRole: "superadmin",
+    actorRole: actorRole ?? "admin",
     targetType: "condition",
     targetId: conditionId,
     details: { fields: Object.keys(updates) },

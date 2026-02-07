@@ -52,7 +52,7 @@
 
 | #   | Critère                                                   | Résultat attendu                                         |
 | --- | --------------------------------------------------------- | -------------------------------------------------------- |
-| D1  | Un SuperAdmin peut créer une condition (nom, type, durée) | Condition créée, visible dans le catalogue               |
+| D1  | Un admin peut créer une condition (nom, type, durée)      | Condition créée, visible dans le catalogue               |
 | D2  | Un admin peut valider une condition pour un membre        | `memberConditions/` mis à jour, log créé                 |
 | D3  | Un admin peut invalider une condition                     | `validated: false`, log créé                             |
 | D4  | L'historique de validation est visible                    | Qui a validé, quand, note                                |

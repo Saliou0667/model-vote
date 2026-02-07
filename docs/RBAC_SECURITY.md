@@ -48,8 +48,8 @@
 | Action                               | member                                 | admin | superadmin |
 | ------------------------------------ | -------------------------------------- | ----- | ---------- |
 | Lire les conditions                  | ✅ (catalogue + checklist personnelle) | ✅    | ✅         |
-| Créer une condition                  | ❌                                     | ❌    | ✅         |
-| Modifier/Archiver une condition      | ❌                                     | ❌    | ✅         |
+| Créer une condition                  | ❌                                     | ✅    | ✅         |
+| Modifier/Archiver une condition      | ❌                                     | ✅    | ✅         |
 | Valider une condition pour un membre | ❌                                     | ✅    | ✅         |
 
 ### 2.4 Cotisations & Paiements

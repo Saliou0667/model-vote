@@ -76,7 +76,7 @@ conditions/{conditionId}
 | `type`             | `string`         | `"checkbox"` \| `"date"` \| `"amount"` \| `"file"` \| `"text"` |
 | `validatedBy`      | `string`         | `"admin"` (qui peut valider)                                   |
 | `validityDuration` | `number \| null` | Durée de validité en jours (null = permanent)                  |
-| `createdBy`        | `string`         | UID du SuperAdmin créateur                                     |
+| `createdBy`        | `string`         | UID de l'admin ou superadmin créateur                          |
 | `createdAt`        | `timestamp`      |                                                                |
 | `updatedAt`        | `timestamp`      |                                                                |
 | `isActive`         | `boolean`        | Condition active ou archivée                                   |

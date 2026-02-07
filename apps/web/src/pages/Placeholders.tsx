@@ -957,6 +957,7 @@ export function AdminMembersPage() {
 
 export function AdminConditionsPage() {
   const { role } = useAuth();
+  const canManageConditionCatalog = role === "admin" || role === "superadmin";
   const queryClient = useQueryClient();
   const conditionsQuery = useQuery({
     queryKey: queryKeys.conditions,
@@ -1042,7 +1043,7 @@ export function AdminConditionsPage() {
         <CardContent>
           <Stack spacing={2}>
             <Typography variant="h6">Catalogue conditions</Typography>
-            {role === "superadmin" ? (
+            {canManageConditionCatalog ? (
               <>
                 <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                   <TextField label="Nom" value={name} onChange={(event) => setName(event.target.value)} fullWidth />
@@ -1088,7 +1089,7 @@ export function AdminConditionsPage() {
                 </Box>
               </>
             ) : (
-              <Alert severity="info">Seul un superadmin peut creer/modifier le catalogue.</Alert>
+              <Alert severity="info">Seul un admin ou superadmin peut creer/modifier le catalogue.</Alert>
             )}
 
             {conditionsQuery.isLoading ? <Skeleton height={120} /> : null}
@@ -1114,7 +1115,7 @@ export function AdminConditionsPage() {
                         <Button
                           size="small"
                           variant="outlined"
-                          disabled={role !== "superadmin" || updateMutation.isPending}
+                          disabled={!canManageConditionCatalog || updateMutation.isPending}
                           onClick={() =>
                             updateMutation.mutate({
                               conditionId: condition.id,

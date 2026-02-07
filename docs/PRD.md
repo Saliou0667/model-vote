@@ -86,7 +86,7 @@ Permettre à une fédération d'organiser des élections à distance avec :
 | ------------------------------ | ------------------------------------- |
 | Tout ce que fait Admin         | + gestion des admins                  |
 | Gérer les admins               | Promouvoir/révoquer des admins        |
-| Créer les conditions globales  | Catalogue de conditions réutilisables |
+| Superviser le catalogue des conditions | Catalogue géré par admin/superadmin |
 | Définir politiques de sécurité | Audit, exports, verrouillages         |
 | Accès audit (break-glass)      | Avec motif obligatoire + log          |
 | Voir les logs complets         | Actions, sécurité, audit              |
@@ -106,7 +106,7 @@ Permettre à une fédération d'organiser des élections à distance avec :
 
 ### B) Gestion des conditions (paramétrables)
 
-**Catalogue de conditions** (créé par SuperAdmin) :
+**Catalogue de conditions** (géré par admin/superadmin) :
 
 - Cotisation à jour
 - Ancienneté minimale

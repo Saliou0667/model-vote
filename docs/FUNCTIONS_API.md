@@ -182,7 +182,7 @@
 #### `createCondition`
 
 - **Trigger** : `onCall`
-- **Rôle requis** : `superadmin`
+- **Rôle requis** : `admin` | `superadmin`
 - **Input** :
   ```ts
   {
@@ -200,7 +200,7 @@
 #### `updateCondition`
 
 - **Trigger** : `onCall`
-- **Rôle requis** : `superadmin`
+- **Rôle requis** : `admin` | `superadmin`
 - **Input** :
   ```ts
   {
