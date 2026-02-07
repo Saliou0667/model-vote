@@ -2,6 +2,7 @@
 import { createContext, useCallback, useEffect, useMemo, useState } from "react";
 import {
   createUserWithEmailAndPassword,
+  getIdTokenResult,
   onAuthStateChanged,
   sendEmailVerification,
   signInWithEmailAndPassword,
@@ -9,7 +10,8 @@ import {
 } from "firebase/auth";
 import type { User } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
-import { auth, db } from "../config/firebase";
+import { httpsCallable } from "firebase/functions";
+import { auth, db, functions } from "../config/firebase";
 import type { ReactNode } from "react";
 import type { AuthContextValue, MemberProfile, UserRole } from "../types/auth";
 
@@ -25,19 +27,32 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [role, setRole] = useState<UserRole>("member");
   const [loading, setLoading] = useState(true);
 
-  const loadMemberProfile = useCallback(async (nextUser: User) => {
-    const token = await nextUser.getIdTokenResult(true);
-    const claimRole = token.claims.role as UserRole | undefined;
-
-    const memberRef = doc(db, "members", nextUser.uid);
-    const memberSnap = await getDoc(memberRef);
-    const nextProfile = memberSnap.exists()
-      ? ({ uid: memberSnap.id, ...(memberSnap.data() as Omit<MemberProfile, "uid">) } as MemberProfile)
-      : null;
-
-    setProfile(nextProfile);
-    setRole(nextProfile?.role ?? claimRole ?? "member");
+  const ensureProfile = useCallback(async () => {
+    const callable = httpsCallable(functions, "ensureMemberProfile");
+    try {
+      await callable({});
+    } catch {
+      // Non-blocking: guards will still rely on claims + available profile.
+    }
   }, []);
+
+  const loadMemberProfile = useCallback(
+    async (nextUser: User) => {
+      await ensureProfile();
+      const token = await getIdTokenResult(nextUser, true);
+      const claimRole = token.claims.role as UserRole | undefined;
+
+      const memberRef = doc(db, "members", nextUser.uid);
+      const memberSnap = await getDoc(memberRef);
+      const nextProfile = memberSnap.exists()
+        ? ({ uid: memberSnap.id, ...(memberSnap.data() as Omit<MemberProfile, "uid">) } as MemberProfile)
+        : null;
+
+      setProfile(nextProfile);
+      setRole(nextProfile?.role ?? claimRole ?? "member");
+    },
+    [ensureProfile],
+  );
 
   const refreshAuthState = useCallback(async () => {
     const current = auth.currentUser;

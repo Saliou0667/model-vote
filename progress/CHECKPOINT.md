@@ -17,26 +17,22 @@
 
 ## 2) Avancement
 
-- Milestone en cours: `M1`
+- Milestone en cours: `M2`
 - Derniere etape terminee:
-  - monorepo `apps/web + functions` initialise
-  - scripts racine `dev/build/lint/test/typecheck/deploy` en place
-  - AuthContext + routes protegees + layouts membre/admin
-  - Cloud Functions `bootstrapRole` et `changeRole` implementees
-  - Firestore rules verrouillees (ecritures metier client refusees)
-  - validation locale OK: `pnpm format:check`, `pnpm build`, `pnpm lint`, `pnpm test`, `pnpm typecheck`
-  - `pnpm dev` verifie (web + emulateurs Auth/Firestore/Functions)
+  - M1 backend: `ensureMemberProfile`, `create/update/deleteSection`, `create/updateMember`
+  - M1 frontend: pages Sections, Membres, Mon profil avec appels callable
+  - validations OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`
 - Prochaine etape immediate:
-  - demarrer M1 (sections + membres)
+  - demarrer M2 (cotisations: politiques + paiements + statut a jour/en retard)
 
 ---
 
 ## 3) Taches immediates (ordre de reprise)
 
-1. Implementer M1 backend: Cloud Functions `createSection`, `updateSection`, `deleteSection`, `createMember`, `updateMember`.
-2. Implementer M1 frontend: pages admin `Sections` et `Membres` avec formulaires et listing.
-3. Ajouter tests unitaires/integration M1 sur emulateurs.
-4. Mettre a jour `progress/STATUS.md` avec la progression M1.
+1. Ajouter les fonctions M2: `setContributionPolicy`, `recordPayment`.
+2. Ajouter la logique de calcul statut cotisation pour affichage membres.
+3. Implementer l'ecran admin Cotisations + integration fiche membre.
+4. Relancer validation complete et commit M2.
 
 ---
 

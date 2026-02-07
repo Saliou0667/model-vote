@@ -10,6 +10,7 @@ export interface MemberProfile {
   status: MemberStatus;
   firstName?: string;
   lastName?: string;
+  phone?: string;
   sectionId?: string;
 }
 

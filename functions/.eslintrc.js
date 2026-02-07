@@ -19,6 +19,7 @@ module.exports = {
     indent: ["error", 2],
     "max-len": "off",
     "object-curly-spacing": ["error", "always"],
+    "operator-linebreak": "off",
     "@typescript-eslint/no-explicit-any": "error",
   },
 };
