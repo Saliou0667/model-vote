@@ -1,0 +1,28 @@
+{
+  "name": "model-vote",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "dev": "concurrently -k -n web,emu -c cyan,magenta \"pnpm --filter web dev\" \"firebase emulators:start --project model-vote-fr-2026 --only \\\"auth,firestore,functions\\\"\"",
+    "build": "pnpm --filter web build && pnpm --filter @model/functions build",
+    "lint": "pnpm --filter web lint && pnpm --filter @model/functions lint",
+    "test": "pnpm --filter web test",
+    "typecheck": "pnpm --filter web exec tsc -b && pnpm --filter @model/functions exec tsc -p tsconfig.json --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "deploy": "firebase deploy --project model-vote-fr-2026 --only hosting,functions,firestore:rules,firestore:indexes",
+    "emulators": "firebase emulators:start --project model-vote-fr-2026 --only \"auth,firestore,functions\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "prettier": "^3.6.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@firebase/util",
+      "esbuild",
+      "protobufjs"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "app": {
+    "locale": "fr-FR",
+    "timezone": "Europe/Paris"
+  },
+  "auth": {
+    "superadmin_emails": "emrysdiallo@gmail.com"
+  },
+  "bootstrap": {
+    "locked": "false"
+  }
+}

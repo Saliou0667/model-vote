@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "default": "model-vote-fr-2026",
+    "prod": "model-vote-fr-2026"
+  },
+  "targets": {}
+}
