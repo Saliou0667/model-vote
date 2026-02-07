@@ -351,7 +351,92 @@ export function MemberVotePage() {
 }
 
 export function MemberResultsPage() {
-  return <PlaceholderPage title="Resultats" subtitle="Resultats publies visibles apres cloture/publication." />;
+  const [selectedElectionId, setSelectedElectionId] = useState("");
+  const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
+  const publishedElections = useMemo(
+    () => (electionsQuery.data ?? []).filter((election) => election.status === "published"),
+    [electionsQuery.data],
+  );
+  const activeElectionId = selectedElectionId || publishedElections[0]?.id || "";
+  const resultsQuery = useQuery({
+    queryKey: ["results", activeElectionId],
+    queryFn: async () => {
+      if (!activeElectionId) return null;
+      return callFunction("getResults", { electionId: activeElectionId }) as Promise<{
+        election: {
+          title: string;
+          participationRate: number;
+          totalVotesCast: number;
+        };
+        results: Array<{
+          rank: number;
+          displayName: string;
+          voteCount: number;
+          percentage: number;
+        }>;
+      }>;
+    },
+    enabled: Boolean(activeElectionId),
+  });
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="h4">Resultats</Typography>
+      {publishedElections.length === 0 ? (
+        <Alert severity="info">Aucun resultat publie.</Alert>
+      ) : (
+        <FormControl fullWidth>
+          <InputLabel id="results-election">Election</InputLabel>
+          <Select
+            labelId="results-election"
+            label="Election"
+            value={activeElectionId}
+            onChange={(event) => setSelectedElectionId(event.target.value)}
+          >
+            {publishedElections.map((election) => (
+              <MenuItem key={election.id} value={election.id}>
+                {election.title}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      )}
+
+      {resultsQuery.isLoading ? <Skeleton height={120} /> : null}
+      {resultsQuery.data ? (
+        <Card>
+          <CardContent>
+            <Stack spacing={2}>
+              <Alert severity="info">
+                {`Participation: ${resultsQuery.data.election.participationRate.toFixed(2)}% (${resultsQuery.data.election.totalVotesCast} votes)`}
+              </Alert>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Rang</TableCell>
+                    <TableCell>Candidat</TableCell>
+                    <TableCell>Votes</TableCell>
+                    <TableCell>%</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {resultsQuery.data.results.map((row) => (
+                    <TableRow key={`${row.rank}-${row.displayName}`}>
+                      <TableCell>{row.rank}</TableCell>
+                      <TableCell>{row.displayName}</TableCell>
+                      <TableCell>{row.voteCount}</TableCell>
+                      <TableCell>{row.percentage.toFixed(2)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Stack>
+          </CardContent>
+        </Card>
+      ) : null}
+      {resultsQuery.error ? <Alert severity="error">{getErrorMessage(resultsQuery.error)}</Alert> : null}
+    </Stack>
+  );
 }
 
 export function AdminDashboardPage() {
@@ -1428,6 +1513,8 @@ export function AdminElectionsPage() {
   const [selectedElectionId, setSelectedElectionId] = useState("");
   const [candidateMemberId, setCandidateMemberId] = useState("");
   const [candidateBio, setCandidateBio] = useState("");
+  const [exportContent, setExportContent] = useState("");
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
 
   const candidatesQuery = useQuery({
     queryKey: ["candidates", selectedElectionId],
@@ -1491,6 +1578,29 @@ export function AdminElectionsPage() {
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const publishElectionMutation = useMutation({
+    mutationFn: (electionId: string) => callFunction("publishResults", { electionId }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const exportResultsMutation = useMutation({
+    mutationFn: ({ electionId, format }: { electionId: string; format: "csv" | "pdf" }) =>
+      callFunction("exportResults", {
+        electionId,
+        format,
+      }) as Promise<{ format: string; content: string }>,
+    onSuccess: (data) => {
+      setError(null);
+      setExportContent(data.content);
+      setExportDialogOpen(true);
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -1699,6 +1809,26 @@ export function AdminElectionsPage() {
                         >
                           Fermer
                         </Button>
+                        <Button
+                          size="small"
+                          color="success"
+                          variant="outlined"
+                          onClick={() => publishElectionMutation.mutate(election.id)}
+                          disabled={election.status !== "closed" || publishElectionMutation.isPending}
+                        >
+                          Publier
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => exportResultsMutation.mutate({ electionId: election.id, format: "csv" })}
+                          disabled={
+                            (election.status !== "published" && election.status !== "closed") ||
+                            exportResultsMutation.isPending
+                          }
+                        >
+                          Export CSV
+                        </Button>
                       </Stack>
                     </TableCell>
                   </TableRow>
@@ -1821,24 +1951,283 @@ export function AdminElectionsPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      <Dialog open={exportDialogOpen} onClose={() => setExportDialogOpen(false)} fullWidth maxWidth="md">
+        <DialogTitle>Export resultats</DialogTitle>
+        <DialogContent>
+          <TextField
+            multiline
+            minRows={8}
+            fullWidth
+            value={exportContent}
+            onChange={(event) => setExportContent(event.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setExportDialogOpen(false)}>Fermer</Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }
 
 export function AdminLogsPage() {
-  return <PlaceholderPage title="Logs" subtitle="Logs filtres selon role (M6)." />;
+  const [actionFilter, setActionFilter] = useState("");
+  const logsQuery = useQuery({
+    queryKey: ["logs", actionFilter],
+    queryFn: () =>
+      callFunction("getAuditLogs", {
+        action: actionFilter || undefined,
+        limit: 200,
+      }) as Promise<{ logs: Array<Record<string, unknown>>; total: number }>,
+  });
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="h4">Logs</Typography>
+      <Card>
+        <CardContent>
+          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+            <TextField
+              label="Filtrer par action"
+              value={actionFilter}
+              onChange={(event) => setActionFilter(event.target.value)}
+              fullWidth
+            />
+            <Button variant="outlined" onClick={() => logsQuery.refetch()}>
+              Actualiser
+            </Button>
+          </Stack>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent>
+          {logsQuery.isLoading ? <Skeleton height={120} /> : null}
+          {(logsQuery.data?.logs.length ?? 0) > 0 ? (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Action</TableCell>
+                  <TableCell>Acteur</TableCell>
+                  <TableCell>Cible</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {logsQuery.data?.logs.map((log, index) => {
+                  const timestamp = (log.timestamp as { toDate?: () => Date } | undefined)?.toDate?.();
+                  const key = String(log.id ?? `${String(log.action ?? "log")}-${index}`);
+                  return (
+                    <TableRow key={key}>
+                      <TableCell>{timestamp ? timestamp.toLocaleString("fr-FR") : "-"}</TableCell>
+                      <TableCell>{String(log.action ?? "-")}</TableCell>
+                      <TableCell>{String(log.actorId ?? "-")}</TableCell>
+                      <TableCell>{`${String(log.targetType ?? "")}:${String(log.targetId ?? "")}`}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          ) : (
+            <Alert severity="info">Aucun log a afficher.</Alert>
+          )}
+        </CardContent>
+      </Card>
+    </Stack>
+  );
 }
 
 export function SuperAdminAdminsPage() {
+  const queryClient = useQueryClient();
+  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const [error, setError] = useState<string | null>(null);
+  const [pendingRoles, setPendingRoles] = useState<Record<string, Member["role"]>>({});
+
+  const changeRoleMutation = useMutation({
+    mutationFn: ({ memberId, newRole }: { memberId: string; newRole: Member["role"] }) =>
+      callFunction("changeRole", { memberId, newRole }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.members });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
   return (
-    <PlaceholderPage
-      title="Gestion admins"
-      subtitle="Promotion/revocation roles admin/superadmin (M6)."
-      actionLabel="Promouvoir"
-    />
+    <Stack spacing={2}>
+      <Typography variant="h4">Gestion admins</Typography>
+      {error ? <Alert severity="error">{error}</Alert> : null}
+      <Card>
+        <CardContent>
+          {membersQuery.isLoading ? <Skeleton height={120} /> : null}
+          {(membersQuery.data?.length ?? 0) > 0 ? (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Membre</TableCell>
+                  <TableCell>Email</TableCell>
+                  <TableCell>Role actuel</TableCell>
+                  <TableCell>Nouveau role</TableCell>
+                  <TableCell align="right">Action</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {membersQuery.data?.map((member) => (
+                  <TableRow key={member.id}>
+                    <TableCell>{`${member.firstName} ${member.lastName}`}</TableCell>
+                    <TableCell>{member.email}</TableCell>
+                    <TableCell>{member.role}</TableCell>
+                    <TableCell>
+                      <FormControl size="small" sx={{ minWidth: 180 }}>
+                        <Select
+                          value={pendingRoles[member.id] ?? member.role}
+                          onChange={(event) =>
+                            setPendingRoles((previous) => ({
+                              ...previous,
+                              [member.id]: event.target.value as Member["role"],
+                            }))
+                          }
+                        >
+                          <MenuItem value="member">member</MenuItem>
+                          <MenuItem value="admin">admin</MenuItem>
+                          <MenuItem value="superadmin">superadmin</MenuItem>
+                        </Select>
+                      </FormControl>
+                    </TableCell>
+                    <TableCell align="right">
+                      <Button
+                        variant="contained"
+                        size="small"
+                        onClick={() =>
+                          changeRoleMutation.mutate({
+                            memberId: member.id,
+                            newRole: pendingRoles[member.id] ?? member.role,
+                          })
+                        }
+                        disabled={changeRoleMutation.isPending}
+                      >
+                        Appliquer
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <Alert severity="info">Aucun membre disponible.</Alert>
+          )}
+        </CardContent>
+      </Card>
+    </Stack>
   );
 }
 
 export function SuperAdminAuditPage() {
-  return <PlaceholderPage title="Audit confidentiel" subtitle="Break-glass superadmin avec motif obligatoire (M6)." />;
+  const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
+  const [electionId, setElectionId] = useState("");
+  const [memberId, setMemberId] = useState("");
+  const [reason, setReason] = useState("");
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const checkMutation = useMutation({
+    mutationFn: () =>
+      callFunction("auditCheckVoter", {
+        electionId,
+        memberId,
+        reason,
+      }) as Promise<Record<string, unknown>>,
+    onSuccess: (data) => {
+      setError(null);
+      setResult(data);
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const revealMutation = useMutation({
+    mutationFn: () =>
+      callFunction("auditRevealVote", {
+        electionId,
+        memberId,
+        reason,
+      }) as Promise<Record<string, unknown>>,
+    onSuccess: (data) => {
+      setError(null);
+      setResult(data);
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="h4">Audit confidentiel</Typography>
+      {error ? <Alert severity="error">{error}</Alert> : null}
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            <FormControl fullWidth>
+              <InputLabel id="audit-election">Election</InputLabel>
+              <Select
+                labelId="audit-election"
+                label="Election"
+                value={electionId}
+                onChange={(event) => setElectionId(event.target.value)}
+              >
+                {electionsQuery.data?.map((election) => (
+                  <MenuItem value={election.id} key={election.id}>
+                    {`${election.title} (${election.status})`}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              label="Member ID"
+              value={memberId}
+              onChange={(event) => setMemberId(event.target.value)}
+              fullWidth
+            />
+            <TextField
+              label="Motif audit (obligatoire)"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              fullWidth
+            />
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <Button
+                variant="outlined"
+                onClick={() => checkMutation.mutate()}
+                disabled={!electionId || !memberId || reason.length < 5 || checkMutation.isPending}
+              >
+                Verifier vote (oui/non)
+              </Button>
+              <Button
+                variant="contained"
+                color="warning"
+                onClick={() => revealMutation.mutate()}
+                disabled={!electionId || !memberId || reason.length < 5 || revealMutation.isPending}
+              >
+                Reveler le vote
+              </Button>
+            </Stack>
+          </Stack>
+        </CardContent>
+      </Card>
+      {result ? (
+        <Card>
+          <CardContent>
+            <Typography variant="h6" gutterBottom>
+              Resultat audit
+            </Typography>
+            <TextField
+              multiline
+              minRows={6}
+              fullWidth
+              value={JSON.stringify(result, null, 2)}
+              onChange={(event) => setResult({ raw: event.target.value })}
+            />
+          </CardContent>
+        </Card>
+      ) : null}
+    </Stack>
+  );
 }

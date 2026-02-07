@@ -17,22 +17,22 @@
 
 ## 2) Avancement
 
-- Milestone en cours: `M6`
+- Milestone en cours: `Done`
 - Derniere etape terminee:
-  - M5 backend: `castVote` transactionnel (tokenIndex + ballots)
-  - M5 frontend: page vote membre avec confirmation
-  - validations OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`
+  - M6 backend: resultats/exports/logs/audit
+  - M6 frontend: resultats membre, logs admin, gestion admins, audit superadmin
+  - validations finales OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`
 - Prochaine etape immediate:
-  - demarrer M6 (resultats, exports, logs, audit, gestion admins)
+  - optionnel: hardening E2E + couverture tests + optimisation bundle frontend
 
 ---
 
 ## 3) Taches immediates (ordre de reprise)
 
-1. Ajouter fonctions M6: `publishResults`, `getResults`, `exportResults`, `getAuditLogs`, `auditCheckVoter`, `auditRevealVote`.
-2. Integrer pages Resultats (membre/admin), Logs, Gestion admins, Audit superadmin.
-3. Verifier restrictions audit (motif obligatoire, superadmin only).
-4. Relancer validation complete et commit final M6.
+1. Configurer Playwright E2E complet sur emulateurs.
+2. Ajouter tests unitaires Functions (eligibilite, castVote, publishResults).
+3. Optimiser bundle web (split chunks routes/pages).
+4. Finaliser pipeline CI/CD bloquante (lint/test/typecheck/build/e2e).
 
 ---
 

@@ -1501,3 +1501,250 @@ export const castVote = onCall(async (request) => {
 
   return ok({ message: "Vote enregistre" });
 });
+
+export const publishResults = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const electionRef = db.collection("elections").doc(electionId);
+  const electionSnap = await electionRef.get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+
+  const election = electionSnap.data() as { status?: string; totalVotesCast?: number };
+  if (election.status !== "closed") {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_CLOSED");
+  }
+
+  const ballotsSnap = await db.collection(`elections/${electionId}/ballots`).get();
+  const candidatesSnap = await db.collection(`elections/${electionId}/candidates`).get();
+  const candidateName = new Map<string, string>();
+  candidatesSnap.docs.forEach((doc) => {
+    candidateName.set(doc.id, String(doc.data().displayName ?? doc.id));
+  });
+
+  const counts = new Map<string, number>();
+  ballotsSnap.docs.forEach((ballot) => {
+    const candidateId = String(ballot.data().candidateId ?? "");
+    counts.set(candidateId, (counts.get(candidateId) ?? 0) + 1);
+  });
+
+  const totalVotes = ballotsSnap.size;
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const batch = db.batch();
+
+  sorted.forEach(([candidateId, voteCount], index) => {
+    batch.set(db.collection(`elections/${electionId}/results`).doc(candidateId), {
+      candidateId,
+      displayName: candidateName.get(candidateId) ?? candidateId,
+      voteCount,
+      percentage: totalVotes > 0 ? (voteCount / totalVotes) * 100 : 0,
+      rank: index + 1,
+      computedAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  batch.update(electionRef, {
+    status: "published",
+    publishedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(db.collection("auditLogs").doc(), {
+    action: "election.publish",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "election",
+    targetId: electionId,
+    details: { totalVotesCast: election.totalVotesCast ?? totalVotes },
+    timestamp: FieldValue.serverTimestamp(),
+  });
+  await batch.commit();
+
+  return ok({ electionId, totalVotes });
+});
+
+export const getResults = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const electionSnap = await db.collection("elections").doc(electionId).get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+
+  const election = electionSnap.data() as {
+    title?: string;
+    status?: string;
+    totalEligibleVoters?: number;
+    totalVotesCast?: number;
+  };
+  if (election.status !== "published" && actorRole !== "admin" && actorRole !== "superadmin") {
+    throw new HttpsError("permission-denied", "ERROR_RESULTS_NOT_PUBLISHED");
+  }
+
+  const resultsSnap = await db.collection(`elections/${electionId}/results`).orderBy("rank", "asc").get();
+  const results = resultsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const totalEligible = Number(election.totalEligibleVoters ?? 0);
+  const totalVotesCast = Number(election.totalVotesCast ?? 0);
+  const participationRate = totalEligible > 0 ? (totalVotesCast / totalEligible) * 100 : 0;
+
+  return ok({
+    election: {
+      electionId,
+      title: election.title ?? "",
+      status: election.status ?? "draft",
+      totalEligibleVoters: totalEligible,
+      totalVotesCast,
+      participationRate,
+    },
+    results,
+  });
+});
+
+export const exportResults = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const format = requireEnum<"csv" | "pdf">(request.data?.format, "format", ["csv", "pdf"]);
+  const electionSnap = await db.collection("elections").doc(electionId).get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const resultsSnap = await db.collection(`elections/${electionId}/results`).orderBy("rank", "asc").get();
+  const resultRows = resultsSnap.docs.map((doc) => ({
+    rank: Number(doc.data().rank ?? 0),
+    displayName: String(doc.data().displayName ?? doc.id),
+    voteCount: Number(doc.data().voteCount ?? 0),
+    percentage: Number(doc.data().percentage ?? 0),
+  }));
+
+  const rows = [
+    "rank,candidate,voteCount,percentage",
+    ...resultRows.map((row) => `${row.rank},"${row.displayName}",${row.voteCount},${row.percentage.toFixed(2)}`),
+  ];
+  const csv = rows.join("\n");
+  const reportRows = rows.slice(1).map((line) => line.replaceAll(",", " | "));
+  const payload = format === "csv" ? csv : `RESULTATS ELECTION\n\n${reportRows.join("\n")}`;
+
+  await writeAudit({
+    action: "export.generate",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "export",
+    targetId: electionId,
+    details: { format },
+  });
+
+  return ok({ format, content: payload });
+});
+
+export const getAuditLogs = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const actionFilter = optionalString(request.data?.action);
+  const limit = Math.min(Number(request.data?.limit ?? 100), 250);
+
+  let logsQuery = db.collection("auditLogs").orderBy("timestamp", "desc").limit(limit);
+  if (actionFilter) logsQuery = logsQuery.where("action", "==", actionFilter);
+  const snap = await logsQuery.get();
+  let logs: Array<{ id: string; action?: string; [key: string]: unknown }> = snap.docs.map((doc) => ({
+    id: doc.id,
+    ...doc.data(),
+  }));
+  if (actorRole !== "superadmin") {
+    logs = logs.filter((log) => !String(log.action ?? "").startsWith("audit."));
+  }
+
+  return ok({ logs, total: logs.length });
+});
+
+function requireAuditReason(value: unknown): string {
+  const reason = requireString(value, "reason");
+  if (reason.length < 5) {
+    throw new HttpsError("invalid-argument", "ERROR_AUDIT_REASON_REQUIRED");
+  }
+  return reason;
+}
+
+export const auditCheckVoter = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const memberId = requireString(request.data?.memberId, "memberId");
+  const reason = requireAuditReason(request.data?.reason);
+
+  const tokenSnap = await db.collection(`elections/${electionId}/tokenIndex`).doc(memberId).get();
+  const token = tokenSnap.data() as { hasVoted?: boolean; votedAt?: { toDate?: () => Date } };
+
+  await writeAudit({
+    action: "audit.access",
+    actorId: actorUid,
+    actorRole: "superadmin",
+    targetType: "audit",
+    targetId: electionId,
+    details: { memberId, reason, scope: "check_voter" },
+  });
+
+  return ok({
+    hasVoted: Boolean(tokenSnap.exists && token?.hasVoted),
+    votedAt: token?.votedAt?.toDate?.()?.toISOString() ?? null,
+  });
+});
+
+export const auditRevealVote = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const memberId = requireString(request.data?.memberId, "memberId");
+  const reason = requireAuditReason(request.data?.reason);
+
+  const tokenSnap = await db.collection(`elections/${electionId}/tokenIndex`).doc(memberId).get();
+  const token = tokenSnap.data() as { voteToken?: string; hasVoted?: boolean; votedAt?: { toDate?: () => Date } };
+  if (!tokenSnap.exists || !token?.hasVoted || !token.voteToken) {
+    await writeAudit({
+      action: "audit.access",
+      actorId: actorUid,
+      actorRole: "superadmin",
+      targetType: "audit",
+      targetId: electionId,
+      details: { memberId, reason, scope: "reveal_vote_none" },
+    });
+    return ok({ hasVoted: false });
+  }
+
+  const ballotSnap = await db.collection(`elections/${electionId}/ballots`).doc(token.voteToken).get();
+  const ballot = ballotSnap.data() as { candidateId?: string } | undefined;
+  let candidateName = "";
+  if (ballot?.candidateId) {
+    const candidateSnap = await db.collection(`elections/${electionId}/candidates`).doc(ballot.candidateId).get();
+    candidateName = String(candidateSnap.data()?.displayName ?? "");
+  }
+
+  await writeAudit({
+    action: "audit.access",
+    actorId: actorUid,
+    actorRole: "superadmin",
+    targetType: "audit",
+    targetId: electionId,
+    details: { memberId, reason, scope: "reveal_vote" },
+  });
+
+  return ok({
+    hasVoted: true,
+    candidateId: ballot?.candidateId ?? null,
+    candidateName,
+    votedAt: token.votedAt?.toDate?.()?.toISOString() ?? null,
+  });
+});
