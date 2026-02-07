@@ -20,7 +20,7 @@ import {
   SuperAdminAdminsPage,
   SuperAdminAuditPage,
 } from "../pages/Placeholders";
-import { AppEntryRedirect, RequireAdmin, RequireAuth, RequireSuperAdmin } from "./guards";
+import { AppEntryRedirect, RequireAdmin, RequireAuth, RequireSignedIn, RequireSuperAdmin } from "./guards";
 
 export function AppRouter() {
   return (
@@ -35,9 +35,9 @@ export function AppRouter() {
       <Route
         path="/verify-email"
         element={
-          <RequireAuth>
+          <RequireSignedIn>
             <AuthLayout />
-          </RequireAuth>
+          </RequireSignedIn>
         }
       >
         <Route index element={<VerifyEmailPage />} />

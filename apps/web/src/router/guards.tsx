@@ -32,6 +32,13 @@ export function RequireAuth({ children }: GuardProps) {
   return <>{children}</>;
 }
 
+export function RequireSignedIn({ children }: GuardProps) {
+  const { loading, user } = useAuth();
+  if (loading) return <Loader />;
+  if (!user) return <Navigate to="/auth/login" replace />;
+  return <>{children}</>;
+}
+
 export function RequireAdmin({ children }: GuardProps) {
   const { loading, user, role } = useAuth();
   if (loading) return <Loader />;
