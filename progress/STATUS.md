@@ -12,32 +12,33 @@
 | M1 - Sections & Membres        | Termine      | 100%        | Backend + UI CRUD + validations OK  |
 | M2 - Cotisations               | Termine      | 100%        | Policy/paiements + UI + logs OK     |
 | M3 - Eligibilite               | Termine      | 100%        | Conditions + validation + calcul OK |
-| M4 - Elections & Candidats     | En cours     | 0%          | Prochaine etape                     |
-| M5 - Vote + Confidentialite    | Non commence | 0%          | Depend de M4                        |
+| M4 - Elections & Candidats     | Termine      | 100%        | Cycle election + UI candidats OK    |
+| M5 - Vote + Confidentialite    | En cours     | 0%          | Prochaine etape                     |
 | M6 - Resultats, Exports, Audit | Non commence | 0%          | Depend de M5                        |
 
-**Progression globale : 60%**
+**Progression globale : 74%**
 
 ---
 
-## Detail M3
+## Detail M4
 
-| Tache                                                      | Statut |
-| ---------------------------------------------------------- | ------ |
-| Cloud Function `createCondition`                           | OK     |
-| Cloud Function `updateCondition`                           | OK     |
-| Cloud Function `validateCondition`                         | OK     |
-| Cloud Function `computeEligibility`                        | OK     |
-| Ecran admin Conditions (catalogue + activation)            | OK     |
-| Validation de conditions par membre                        | OK     |
-| Ecran membre Mon eligibilite (reasons detaillees)          | OK     |
-| Route admin `/admin/conditions` + navigation               | OK     |
-| Index Firestore memberConditions (`memberId`, `updatedAt`) | OK     |
-| Validation `pnpm format:check`                             | OK     |
-| Validation `pnpm lint`                                     | OK     |
-| Validation `pnpm test`                                     | OK     |
-| Validation `pnpm typecheck`                                | OK     |
-| Validation `pnpm build`                                    | OK     |
+| Tache                                                              | Statut |
+| ------------------------------------------------------------------ | ------ |
+| Cloud Function `createElection`                                    | OK     |
+| Cloud Function `updateElection`                                    | OK     |
+| Cloud Function `openElection`                                      | OK     |
+| Cloud Function `closeElection`                                     | OK     |
+| Cloud Function `addCandidate`                                      | OK     |
+| Cloud Function `validateCandidate`                                 | OK     |
+| Cloud Function `removeCandidate`                                   | OK     |
+| Verification eligibilite candidat avant ajout                      | OK     |
+| Randomisation `displayOrder` a l'ouverture                         | OK     |
+| Ecran admin Elections (creation + ouverture/fermeture + candidats) | OK     |
+| Validation `pnpm format:check`                                     | OK     |
+| Validation `pnpm lint`                                             | OK     |
+| Validation `pnpm test`                                             | OK     |
+| Validation `pnpm typecheck`                                        | OK     |
+| Validation `pnpm build`                                            | OK     |
 
 ---
 
@@ -53,3 +54,4 @@
 | 2026-02-07 | M1 livre : fonctions sections/membres + UI admin/membre + tests OK     |
 | 2026-02-07 | M2 livre : politique cotisations + paiements append-only + UI + tests  |
 | 2026-02-07 | M3 livre : conditions + validation + calcul eligibilite + UI + tests   |
+| 2026-02-07 | M4 livre : elections/candidats + ouverture/fermeture + UI + tests      |

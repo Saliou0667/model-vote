@@ -27,14 +27,16 @@ import { useMemo, useState } from "react";
 import { callFunction, getErrorMessage } from "../api/callables";
 import {
   fetchActiveContributionPolicy,
+  fetchCandidates,
   fetchConditions,
+  fetchElections,
   fetchMemberConditions,
   fetchMembers,
   fetchPayments,
   fetchSections,
 } from "../api/firestoreQueries";
 import { useAuth } from "../hooks/useAuth";
-import type { Condition, Member, MemberCondition, PaymentRecord, Section } from "../types/models";
+import type { Candidate, Condition, Election, Member, MemberCondition, PaymentRecord, Section } from "../types/models";
 
 type PlaceholderPageProps = {
   title: string;
@@ -49,6 +51,7 @@ const queryKeys = {
   policy: ["policy"] as const,
   payments: ["payments"] as const,
   conditions: ["conditions"] as const,
+  elections: ["elections"] as const,
 };
 
 function PlaceholderPage({ title, subtitle, actionLabel, loading = false }: PlaceholderPageProps) {
@@ -1255,8 +1258,423 @@ export function AdminContributionsPage() {
 }
 
 export function AdminElectionsPage() {
+  const queryClient = useQueryClient();
+  const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
+  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const conditionsQuery = useQuery({
+    queryKey: queryKeys.conditions,
+    queryFn: fetchConditions,
+  });
+  const sectionsQuery = useQuery({ queryKey: queryKeys.sections, queryFn: fetchSections });
+  const [error, setError] = useState<string | null>(null);
+
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [type, setType] = useState<Election["type"]>("federal");
+  const [startAt, setStartAt] = useState("");
+  const [endAt, setEndAt] = useState("");
+  const [minSeniority, setMinSeniority] = useState("90");
+  const [allowedSectionIds, setAllowedSectionIds] = useState<string[]>([]);
+  const [voterConditionIds, setVoterConditionIds] = useState<string[]>([]);
+  const [candidateConditionIds, setCandidateConditionIds] = useState<string[]>([]);
+
+  const [selectedElectionId, setSelectedElectionId] = useState("");
+  const [candidateMemberId, setCandidateMemberId] = useState("");
+  const [candidateBio, setCandidateBio] = useState("");
+
+  const candidatesQuery = useQuery({
+    queryKey: ["candidates", selectedElectionId],
+    queryFn: () => fetchCandidates(selectedElectionId),
+    enabled: Boolean(selectedElectionId),
+  });
+
+  const createElectionMutation = useMutation({
+    mutationFn: () =>
+      callFunction("createElection", {
+        title,
+        description,
+        type,
+        startAt: new Date(startAt).toISOString(),
+        endAt: new Date(endAt).toISOString(),
+        minSeniority: Number(minSeniority),
+        voterConditionIds,
+        candidateConditionIds,
+        allowedSectionIds,
+      }),
+    onSuccess: async () => {
+      setError(null);
+      setTitle("");
+      setDescription("");
+      setAllowedSectionIds([]);
+      setVoterConditionIds([]);
+      setCandidateConditionIds([]);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const addCandidateMutation = useMutation({
+    mutationFn: () =>
+      callFunction("addCandidate", {
+        electionId: selectedElectionId,
+        memberId: candidateMemberId,
+        bio: candidateBio,
+      }),
+    onSuccess: async () => {
+      setError(null);
+      setCandidateMemberId("");
+      setCandidateBio("");
+      await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const openElectionMutation = useMutation({
+    mutationFn: (electionId: string) => callFunction("openElection", { electionId }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+      await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const closeElectionMutation = useMutation({
+    mutationFn: (electionId: string) => callFunction("closeElection", { electionId }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const validateCandidateMutation = useMutation({
+    mutationFn: ({
+      electionId,
+      candidateId,
+      status,
+    }: {
+      electionId: string;
+      candidateId: string;
+      status: "validated" | "rejected";
+    }) => callFunction("validateCandidate", { electionId, candidateId, status }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const removeCandidateMutation = useMutation({
+    mutationFn: ({ electionId, candidateId }: { electionId: string; candidateId: string }) =>
+      callFunction("removeCandidate", { electionId, candidateId }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
   return (
-    <PlaceholderPage title="Elections" subtitle="Wizard election et candidats (M4)." actionLabel="Creer une election" />
+    <Stack spacing={2}>
+      <Typography variant="h4">Elections</Typography>
+      {error ? <Alert severity="error">{error}</Alert> : null}
+
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="h6">Creer une election</Typography>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField label="Titre" value={title} onChange={(event) => setTitle(event.target.value)} fullWidth />
+              <FormControl fullWidth>
+                <InputLabel id="election-type">Type</InputLabel>
+                <Select
+                  labelId="election-type"
+                  label="Type"
+                  value={type}
+                  onChange={(event) => setType(event.target.value as Election["type"])}
+                >
+                  <MenuItem value="federal">federal</MenuItem>
+                  <MenuItem value="section">section</MenuItem>
+                  <MenuItem value="other">other</MenuItem>
+                </Select>
+              </FormControl>
+            </Stack>
+            <TextField
+              label="Description"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              fullWidth
+            />
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <TextField
+                type="datetime-local"
+                label="Ouverture"
+                InputLabelProps={{ shrink: true }}
+                value={startAt}
+                onChange={(event) => setStartAt(event.target.value)}
+                fullWidth
+              />
+              <TextField
+                type="datetime-local"
+                label="Cloture"
+                InputLabelProps={{ shrink: true }}
+                value={endAt}
+                onChange={(event) => setEndAt(event.target.value)}
+                fullWidth
+              />
+              <TextField
+                label="Anciennete min (jours)"
+                type="number"
+                value={minSeniority}
+                onChange={(event) => setMinSeniority(event.target.value)}
+                fullWidth
+              />
+            </Stack>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+              <FormControl fullWidth>
+                <InputLabel id="allowed-sections">Sections autorisees</InputLabel>
+                <Select
+                  labelId="allowed-sections"
+                  label="Sections autorisees"
+                  multiple
+                  value={allowedSectionIds}
+                  onChange={(event) =>
+                    setAllowedSectionIds(
+                      typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                    )
+                  }
+                >
+                  {sectionsQuery.data?.map((section) => (
+                    <MenuItem key={section.id} value={section.id}>
+                      {section.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl fullWidth>
+                <InputLabel id="voter-conditions">Conditions vote</InputLabel>
+                <Select
+                  labelId="voter-conditions"
+                  label="Conditions vote"
+                  multiple
+                  value={voterConditionIds}
+                  onChange={(event) =>
+                    setVoterConditionIds(
+                      typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                    )
+                  }
+                >
+                  {conditionsQuery.data?.map((condition) => (
+                    <MenuItem key={condition.id} value={condition.id}>
+                      {condition.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl fullWidth>
+                <InputLabel id="candidate-conditions">Conditions candidat</InputLabel>
+                <Select
+                  labelId="candidate-conditions"
+                  label="Conditions candidat"
+                  multiple
+                  value={candidateConditionIds}
+                  onChange={(event) =>
+                    setCandidateConditionIds(
+                      typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                    )
+                  }
+                >
+                  {conditionsQuery.data?.map((condition) => (
+                    <MenuItem key={condition.id} value={condition.id}>
+                      {condition.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Stack>
+            <Box>
+              <Button
+                variant="contained"
+                onClick={() => createElectionMutation.mutate()}
+                disabled={!title || !startAt || !endAt || createElectionMutation.isPending}
+              >
+                Creer l'election
+              </Button>
+            </Box>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent>
+          <Typography variant="h6" mb={2}>
+            Liste des elections
+          </Typography>
+          {electionsQuery.isLoading ? <Skeleton height={120} /> : null}
+          {(electionsQuery.data?.length ?? 0) > 0 ? (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Titre</TableCell>
+                  <TableCell>Statut</TableCell>
+                  <TableCell>Ouverture</TableCell>
+                  <TableCell>Cloture</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {electionsQuery.data?.map((election) => (
+                  <TableRow key={election.id} selected={selectedElectionId === election.id}>
+                    <TableCell>{election.title}</TableCell>
+                    <TableCell>{election.status}</TableCell>
+                    <TableCell>{election.startAt?.toDate().toLocaleString("fr-FR")}</TableCell>
+                    <TableCell>{election.endAt?.toDate().toLocaleString("fr-FR")}</TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button size="small" variant="outlined" onClick={() => setSelectedElectionId(election.id)}>
+                          Gerer
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => openElectionMutation.mutate(election.id)}
+                          disabled={election.status !== "draft" || openElectionMutation.isPending}
+                        >
+                          Ouvrir
+                        </Button>
+                        <Button
+                          size="small"
+                          color="warning"
+                          variant="outlined"
+                          onClick={() => closeElectionMutation.mutate(election.id)}
+                          disabled={election.status !== "open" || closeElectionMutation.isPending}
+                        >
+                          Fermer
+                        </Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <Alert severity="info">Aucune election configuree.</Alert>
+          )}
+        </CardContent>
+      </Card>
+
+      {selectedElectionId ? (
+        <Card>
+          <CardContent>
+            <Stack spacing={2}>
+              <Typography variant="h6">Gestion des candidats</Typography>
+              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                <FormControl fullWidth>
+                  <InputLabel id="candidate-member">Membre</InputLabel>
+                  <Select
+                    labelId="candidate-member"
+                    label="Membre"
+                    value={candidateMemberId}
+                    onChange={(event) => setCandidateMemberId(event.target.value)}
+                  >
+                    {membersQuery.data?.map((member) => (
+                      <MenuItem key={member.id} value={member.id}>
+                        {`${member.firstName} ${member.lastName} - ${member.email}`}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <TextField
+                  label="Bio"
+                  value={candidateBio}
+                  onChange={(event) => setCandidateBio(event.target.value)}
+                  fullWidth
+                />
+                <Button
+                  variant="contained"
+                  onClick={() => addCandidateMutation.mutate()}
+                  disabled={!candidateMemberId || addCandidateMutation.isPending}
+                >
+                  Ajouter
+                </Button>
+              </Stack>
+
+              {(candidatesQuery.data?.length ?? 0) > 0 ? (
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Candidat</TableCell>
+                      <TableCell>Section</TableCell>
+                      <TableCell>Statut</TableCell>
+                      <TableCell align="right">Actions</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {candidatesQuery.data?.map((candidate: Candidate) => (
+                      <TableRow key={candidate.id}>
+                        <TableCell>{candidate.displayName}</TableCell>
+                        <TableCell>{candidate.sectionName || "-"}</TableCell>
+                        <TableCell>{candidate.status}</TableCell>
+                        <TableCell align="right">
+                          <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() =>
+                                validateCandidateMutation.mutate({
+                                  electionId: selectedElectionId,
+                                  candidateId: candidate.id,
+                                  status: "validated",
+                                })
+                              }
+                              disabled={validateCandidateMutation.isPending}
+                            >
+                              Valider
+                            </Button>
+                            <Button
+                              size="small"
+                              color="warning"
+                              variant="outlined"
+                              onClick={() =>
+                                validateCandidateMutation.mutate({
+                                  electionId: selectedElectionId,
+                                  candidateId: candidate.id,
+                                  status: "rejected",
+                                })
+                              }
+                              disabled={validateCandidateMutation.isPending}
+                            >
+                              Rejeter
+                            </Button>
+                            <Button
+                              size="small"
+                              color="error"
+                              variant="outlined"
+                              onClick={() =>
+                                removeCandidateMutation.mutate({
+                                  electionId: selectedElectionId,
+                                  candidateId: candidate.id,
+                                })
+                              }
+                              disabled={removeCandidateMutation.isPending}
+                            >
+                              Retirer
+                            </Button>
+                          </Stack>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <Alert severity="info">Aucun candidat sur cette election.</Alert>
+              )}
+            </Stack>
+          </CardContent>
+        </Card>
+      ) : null}
+    </Stack>
   );
 }
 

@@ -68,3 +68,30 @@ export type MemberCondition = {
   note?: string;
   evidence?: string;
 };
+
+export type Election = {
+  id: string;
+  title: string;
+  description: string;
+  type: "federal" | "section" | "other";
+  status: "draft" | "open" | "closed" | "published" | "archived";
+  startAt?: Timestamp;
+  endAt?: Timestamp;
+  voterConditionIds?: string[];
+  candidateConditionIds?: string[];
+  allowedSectionIds?: string[] | null;
+  minSeniority?: number;
+  totalEligibleVoters?: number;
+  totalVotesCast?: number;
+};
+
+export type Candidate = {
+  id: string;
+  memberId: string;
+  displayName: string;
+  sectionName: string;
+  bio?: string;
+  photoUrl?: string;
+  status: "proposed" | "validated" | "rejected";
+  displayOrder?: number;
+};

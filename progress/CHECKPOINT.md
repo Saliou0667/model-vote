@@ -17,22 +17,22 @@
 
 ## 2) Avancement
 
-- Milestone en cours: `M4`
+- Milestone en cours: `M5`
 - Derniere etape terminee:
-  - M3 backend: `create/updateCondition`, `validateCondition`, `computeEligibility`
-  - M3 frontend: page Conditions admin + page Mon eligibilite membre
+  - M4 backend: fonctions elections/candidats (create/update/open/close/add/validate/remove)
+  - M4 frontend: page elections admin complete
   - validations OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`
 - Prochaine etape immediate:
-  - demarrer M4 (elections + candidats + cycle de vie)
+  - demarrer M5 (castVote, confidentialite, page vote membre)
 
 ---
 
 ## 3) Taches immediates (ordre de reprise)
 
-1. Ajouter les fonctions M4: `createElection`, `updateElection`, `openElection`, `closeElection`, `addCandidate`, `validateCandidate`, `removeCandidate`.
-2. Ajouter les ecrans M4: gestion elections + candidats.
-3. Integrer verrouillage post-ouverture et controles d'eligibilite candidat.
-4. Relancer validation complete et commit M4.
+1. Ajouter la fonction M5 `castVote` transactionnelle (deadline, double vote, tokenIndex, ballots).
+2. Integrer page membre Vote avec confirmation.
+3. Verifier regles confidentiality `ballots/tokenIndex` et logs sans candidateId.
+4. Relancer validation complete et commit M5.
 
 ---
 

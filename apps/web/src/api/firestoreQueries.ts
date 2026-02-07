@@ -1,6 +1,15 @@
 import { collection, getDocs, orderBy, query, where, type DocumentData } from "firebase/firestore";
 import { db } from "../config/firebase";
-import type { Condition, ContributionPolicy, Member, MemberCondition, PaymentRecord, Section } from "../types/models";
+import type {
+  Candidate,
+  Condition,
+  ContributionPolicy,
+  Election,
+  Member,
+  MemberCondition,
+  PaymentRecord,
+  Section,
+} from "../types/models";
 
 function toSection(id: string, data: DocumentData): Section {
   return {
@@ -112,6 +121,48 @@ export async function fetchMemberConditions(memberId: string): Promise<MemberCon
       expiresAt: data.expiresAt ?? null,
       note: String(data.note ?? ""),
       evidence: String(data.evidence ?? ""),
+    };
+  });
+}
+
+export async function fetchElections(): Promise<Election[]> {
+  const q = query(collection(db, "elections"), orderBy("createdAt", "desc"));
+  const snap = await getDocs(q);
+  return snap.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      title: String(data.title ?? ""),
+      description: String(data.description ?? ""),
+      type: (data.type ?? "federal") as Election["type"],
+      status: (data.status ?? "draft") as Election["status"],
+      startAt: data.startAt,
+      endAt: data.endAt,
+      voterConditionIds: Array.isArray(data.voterConditionIds) ? data.voterConditionIds : [],
+      candidateConditionIds: Array.isArray(data.candidateConditionIds) ? data.candidateConditionIds : [],
+      allowedSectionIds: Array.isArray(data.allowedSectionIds) ? data.allowedSectionIds : null,
+      minSeniority: Number(data.minSeniority ?? 0),
+      totalEligibleVoters: Number(data.totalEligibleVoters ?? 0),
+      totalVotesCast: Number(data.totalVotesCast ?? 0),
+    };
+  });
+}
+
+export async function fetchCandidates(electionId: string): Promise<Candidate[]> {
+  if (!electionId) return [];
+  const q = query(collection(db, `elections/${electionId}/candidates`), orderBy("displayOrder", "asc"));
+  const snap = await getDocs(q);
+  return snap.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      memberId: String(data.memberId ?? ""),
+      displayName: String(data.displayName ?? ""),
+      sectionName: String(data.sectionName ?? ""),
+      bio: String(data.bio ?? ""),
+      photoUrl: String(data.photoUrl ?? ""),
+      status: (data.status ?? "proposed") as Candidate["status"],
+      displayOrder: Number(data.displayOrder ?? 0),
     };
   });
 }

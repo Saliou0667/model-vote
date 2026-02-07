@@ -174,6 +174,55 @@ function memberConditionDocId(memberId: string, conditionId: string): string {
   return `${memberId}_${conditionId}`;
 }
 
+async function checkMemberAgainstRules(input: {
+  memberId: string;
+  conditionIds: string[];
+  minSeniority?: number;
+  allowedSectionIds?: string[] | null;
+}): Promise<{ eligible: boolean; reasons: string[] }> {
+  const memberSnap = await db.collection("members").doc(input.memberId).get();
+  if (!memberSnap.exists) return { eligible: false, reasons: ["member_not_found"] };
+  const member = memberSnap.data() as {
+    status?: MemberStatus;
+    joinedAt?: { toDate?: () => Date };
+    sectionId?: string;
+  };
+
+  const reasons: string[] = [];
+  if (member.status !== "active") reasons.push("status_inactive");
+
+  const contributionOk = await isContributionUpToDate(input.memberId);
+  if (!contributionOk) reasons.push("contribution_not_up_to_date");
+
+  const minSeniority = Number(input.minSeniority ?? 0);
+  if (minSeniority > 0) {
+    const joinedAt = member.joinedAt?.toDate?.();
+    const seniorityDays = joinedAt ? (Date.now() - joinedAt.getTime()) / 86400000 : 0;
+    if (!joinedAt || seniorityDays < minSeniority) {
+      reasons.push("seniority_not_met");
+    }
+  }
+
+  if (input.allowedSectionIds && input.allowedSectionIds.length > 0) {
+    if (!input.allowedSectionIds.includes(member.sectionId ?? "")) {
+      reasons.push("section_not_allowed");
+    }
+  }
+
+  for (const conditionId of input.conditionIds) {
+    const docId = memberConditionDocId(input.memberId, conditionId);
+    const snap = await db.collection("memberConditions").doc(docId).get();
+    const data = snap.data() as { validated?: boolean; expiresAt?: { toDate?: () => Date } };
+    const expiresAt = data?.expiresAt?.toDate?.();
+    const expired = Boolean(expiresAt && expiresAt.getTime() < Date.now());
+    if (!snap.exists || !data.validated || expired) {
+      reasons.push(`condition_${conditionId}_missing`);
+    }
+  }
+
+  return { eligible: reasons.length === 0, reasons };
+}
+
 export const ensureMemberProfile = onCall(async (request) => {
   const uid = request.auth?.uid;
   const email = request.auth?.token?.email;
@@ -992,4 +1041,358 @@ export const computeEligibility = onCall(async (request) => {
 
   const eligible = reasons.every((reason) => reason.met);
   return ok({ eligible, reasons });
+});
+
+export const createElection = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const title = requireString(request.data?.title, "title");
+  const description = optionalString(request.data?.description) ?? "";
+  const type = requireEnum<"federal" | "section" | "other">(request.data?.type ?? "federal", "type", [
+    "federal",
+    "section",
+    "other",
+  ]);
+  const startAt = requireDate(request.data?.startAt, "startAt");
+  const endAt = requireDate(request.data?.endAt, "endAt");
+  const voterConditionIds = Array.isArray(request.data?.voterConditionIds)
+    ? (request.data?.voterConditionIds as string[])
+    : [];
+  const candidateConditionIds = Array.isArray(request.data?.candidateConditionIds)
+    ? (request.data?.candidateConditionIds as string[])
+    : [];
+  const allowedSectionIds = Array.isArray(request.data?.allowedSectionIds)
+    ? (request.data?.allowedSectionIds as string[])
+    : null;
+  const minSeniority = Number(request.data?.minSeniority ?? 0);
+
+  if (startAt.getTime() <= Date.now() || endAt.getTime() <= startAt.getTime()) {
+    throw new HttpsError("invalid-argument", "ERROR_INVALID_DATES");
+  }
+
+  const ref = db.collection("elections").doc();
+  await ref.set({
+    title,
+    description,
+    type,
+    status: "draft",
+    startAt,
+    endAt,
+    voterConditionIds,
+    candidateConditionIds,
+    allowedSectionIds,
+    minSeniority,
+    totalEligibleVoters: 0,
+    totalVotesCast: 0,
+    createdBy: actorUid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    lockedAt: null,
+    closedAt: null,
+    publishedAt: null,
+  });
+
+  await writeAudit({
+    action: "election.create",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "election",
+    targetId: ref.id,
+    details: { title, startAt: startAt.toISOString(), endAt: endAt.toISOString() },
+  });
+
+  return ok({ electionId: ref.id });
+});
+
+export const updateElection = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const updatesInput = request.data?.updates as Record<string, unknown> | undefined;
+  if (!updatesInput) throw new HttpsError("invalid-argument", "Invalid updates.");
+
+  const electionRef = db.collection("elections").doc(electionId);
+  const electionSnap = await electionRef.get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const election = electionSnap.data() as { status?: string };
+  if (election.status !== "draft" && actorRole !== "superadmin") {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (typeof updatesInput.title === "string") updates.title = updatesInput.title.trim();
+  if (typeof updatesInput.description === "string") {
+    updates.description = updatesInput.description.trim();
+  }
+  if (updatesInput.startAt !== undefined) updates.startAt = requireDate(updatesInput.startAt, "startAt");
+  if (updatesInput.endAt !== undefined) updates.endAt = requireDate(updatesInput.endAt, "endAt");
+  if (Array.isArray(updatesInput.voterConditionIds)) {
+    updates.voterConditionIds = updatesInput.voterConditionIds as string[];
+  }
+  if (Array.isArray(updatesInput.candidateConditionIds)) {
+    updates.candidateConditionIds = updatesInput.candidateConditionIds as string[];
+  }
+  if (Array.isArray(updatesInput.allowedSectionIds)) {
+    updates.allowedSectionIds = updatesInput.allowedSectionIds as string[];
+  }
+  if (typeof updatesInput.minSeniority === "number") {
+    updates.minSeniority = Math.floor(updatesInput.minSeniority);
+  }
+  if (Object.keys(updates).length === 0) {
+    throw new HttpsError("invalid-argument", "Invalid updates.");
+  }
+
+  updates.updatedAt = FieldValue.serverTimestamp();
+  await electionRef.update(updates);
+  await writeAudit({
+    action: "election.update",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "election",
+    targetId: electionId,
+    details: { fields: Object.keys(updates) },
+  });
+
+  return ok({ electionId });
+});
+
+export const addCandidate = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const memberId = requireString(request.data?.memberId, "memberId");
+  const bio = optionalString(request.data?.bio) ?? "";
+  const photoUrl = optionalString(request.data?.photoUrl) ?? "";
+
+  const electionRef = db.collection("elections").doc(electionId);
+  const electionSnap = await electionRef.get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const election = electionSnap.data() as {
+    status?: string;
+    candidateConditionIds?: string[];
+    minSeniority?: number;
+    allowedSectionIds?: string[] | null;
+  };
+  if (election.status !== "draft") {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_DRAFT");
+  }
+
+  const existing = await db
+    .collection(`elections/${electionId}/candidates`)
+    .where("memberId", "==", memberId)
+    .limit(1)
+    .get();
+  if (!existing.empty) {
+    throw new HttpsError("already-exists", "ERROR_CANDIDATE_ALREADY_EXISTS");
+  }
+
+  const eligibility = await checkMemberAgainstRules({
+    memberId,
+    conditionIds: election.candidateConditionIds ?? [],
+    minSeniority: election.minSeniority ?? 0,
+    allowedSectionIds: election.allowedSectionIds ?? null,
+  });
+  if (!eligibility.eligible) {
+    throw new HttpsError("failed-precondition", "ERROR_CANDIDATE_NOT_ELIGIBLE");
+  }
+
+  const memberSnap = await db.collection("members").doc(memberId).get();
+  if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
+  const member = memberSnap.data() as {
+    firstName?: string;
+    lastName?: string;
+    sectionId?: string;
+  };
+  let sectionName = "";
+  if (member.sectionId) {
+    const sectionSnap = await db.collection("sections").doc(member.sectionId).get();
+    sectionName = String(sectionSnap.data()?.name ?? "");
+  }
+
+  const candidateRef = db.collection(`elections/${electionId}/candidates`).doc();
+  await candidateRef.set({
+    memberId,
+    displayName: `${member.firstName ?? ""} ${member.lastName ?? ""}`.trim(),
+    sectionName,
+    bio,
+    photoUrl,
+    status: "proposed",
+    displayOrder: 9999,
+    addedBy: actorUid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  await writeAudit({
+    action: "candidate.add",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "candidate",
+    targetId: candidateRef.id,
+    details: { electionId, memberId },
+  });
+
+  return ok({ electionId, candidateId: candidateRef.id });
+});
+
+export const validateCandidate = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const candidateId = requireString(request.data?.candidateId, "candidateId");
+  const status = requireEnum<"validated" | "rejected">(request.data?.status, "status", ["validated", "rejected"]);
+
+  const ref = db.collection(`elections/${electionId}/candidates`).doc(candidateId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "ERROR_CANDIDATE_NOT_FOUND");
+
+  await ref.update({
+    status,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  await writeAudit({
+    action: status === "validated" ? "candidate.validate" : "candidate.reject",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "candidate",
+    targetId: candidateId,
+    details: { electionId },
+  });
+
+  return ok({ electionId, candidateId, status });
+});
+
+export const removeCandidate = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const candidateId = requireString(request.data?.candidateId, "candidateId");
+  const electionRef = db.collection("elections").doc(electionId);
+  const electionSnap = await electionRef.get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const status = String(electionSnap.data()?.status ?? "draft");
+  if (status !== "draft" && actorRole !== "superadmin") {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_DRAFT");
+  }
+
+  const ref = db.collection(`elections/${electionId}/candidates`).doc(candidateId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "ERROR_CANDIDATE_NOT_FOUND");
+  await ref.delete();
+
+  await writeAudit({
+    action: "candidate.remove",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "candidate",
+    targetId: candidateId,
+    details: { electionId },
+  });
+  return ok({ electionId, candidateId });
+});
+
+export const openElection = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const electionRef = db.collection("elections").doc(electionId);
+  const electionSnap = await electionRef.get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const election = electionSnap.data() as {
+    status?: string;
+    voterConditionIds?: string[];
+    minSeniority?: number;
+    allowedSectionIds?: string[] | null;
+  };
+  if (election.status !== "draft") {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
+  }
+
+  const candidatesSnap = await db.collection(`elections/${electionId}/candidates`).get();
+  const validated = candidatesSnap.docs.filter((doc) => doc.data().status === "validated");
+  if (validated.length < 2) throw new HttpsError("failed-precondition", "ERROR_NO_CANDIDATES");
+
+  const shuffled = [...validated].sort(() => Math.random() - 0.5);
+  const batch = db.batch();
+  shuffled.forEach((doc, index) => {
+    batch.update(doc.ref, {
+      displayOrder: index + 1,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  const membersSnap = await db.collection("members").where("status", "==", "active").get();
+  let totalEligibleVoters = 0;
+  for (const memberDoc of membersSnap.docs) {
+    const eligible = await checkMemberAgainstRules({
+      memberId: memberDoc.id,
+      conditionIds: election.voterConditionIds ?? [],
+      minSeniority: election.minSeniority ?? 0,
+      allowedSectionIds: election.allowedSectionIds ?? null,
+    });
+    if (eligible.eligible) totalEligibleVoters += 1;
+  }
+
+  batch.update(electionRef, {
+    status: "open",
+    lockedAt: FieldValue.serverTimestamp(),
+    totalEligibleVoters,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(db.collection("auditLogs").doc(), {
+    action: "election.open",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "election",
+    targetId: electionId,
+    details: { totalEligibleVoters },
+    timestamp: FieldValue.serverTimestamp(),
+  });
+
+  await batch.commit();
+  return ok({ electionId, totalEligibleVoters });
+});
+
+export const closeElection = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const electionRef = db.collection("elections").doc(electionId);
+  const electionSnap = await electionRef.get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+
+  await electionRef.update({
+    status: "closed",
+    closedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  await writeAudit({
+    action: "election.close",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "election",
+    targetId: electionId,
+  });
+  return ok({ electionId });
 });
