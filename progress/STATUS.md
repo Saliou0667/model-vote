@@ -58,3 +58,4 @@
 | 2026-02-07 | M4 livre : elections/candidats + ouverture/fermeture + UI + tests      |
 | 2026-02-07 | M5 livre : vote confidentiel transactionnel + UI membre + tests        |
 | 2026-02-07 | M6 livre : resultats + exports + logs + audit + gestion roles          |
+| 2026-02-07 | Hardening livre : Playwright smoke + CI GitHub bloquante               |

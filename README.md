@@ -4,10 +4,10 @@ Application de vote interne du `MODEL` (Mouvement Democratique Liberal), basee s
 
 ## Etat du projet
 
-- Milestone courant: `M0` (socle technique)
-- Web app + Firebase Functions en place
-- Auth email/password + routing par role + layouts membre/admin
-- Firebase Emulator Suite configuree
+- Milestones `M0 -> M6` livres
+- Frontend web (React + MUI) + Firebase Functions (RBAC, election, vote, audit)
+- Auth email/password + routing protege par role
+- Firebase Emulator Suite + pipeline CI (lint/typecheck/tests/build/e2e smoke)
 
 ## Structure
 
@@ -32,6 +32,7 @@ pnpm dev
 pnpm build
 pnpm lint
 pnpm test
+pnpm e2e
 pnpm typecheck
 ```
 

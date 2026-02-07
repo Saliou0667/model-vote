@@ -8,6 +8,7 @@
     "build": "pnpm --filter web build && pnpm --filter @model/functions build",
     "lint": "pnpm --filter web lint && pnpm --filter @model/functions lint",
     "test": "pnpm --filter web test",
+    "e2e": "pnpm --filter web e2e",
     "typecheck": "pnpm --filter web exec tsc -b && pnpm --filter @model/functions exec tsc -p tsconfig.json --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

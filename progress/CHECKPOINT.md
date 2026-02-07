@@ -21,18 +21,19 @@
 - Derniere etape terminee:
   - M6 backend: resultats/exports/logs/audit
   - M6 frontend: resultats membre, logs admin, gestion admins, audit superadmin
-  - validations finales OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`
+  - hardening: Playwright smoke + workflow CI GitHub
+  - validations finales OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`, `pnpm e2e`
 - Prochaine etape immediate:
-  - optionnel: hardening E2E + couverture tests + optimisation bundle frontend
+  - optionnel: tests functions avec couverture cible + optimisation bundle frontend
 
 ---
 
 ## 3) Taches immediates (ordre de reprise)
 
-1. Configurer Playwright E2E complet sur emulateurs.
-2. Ajouter tests unitaires Functions (eligibilite, castVote, publishResults).
+1. Ajouter tests unitaires Functions (eligibilite, castVote, publishResults).
+2. Ajouter tests integration Firebase Emulators cote functions.
 3. Optimiser bundle web (split chunks routes/pages).
-4. Finaliser pipeline CI/CD bloquante (lint/test/typecheck/build/e2e).
+4. Ajouter seuils de coverage dans CI (functions 80%, web 60%+).
 
 ---
 
