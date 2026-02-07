@@ -6,39 +6,37 @@
 
 ## Etat global
 
-| Milestone                      | Statut       | Progression | Notes                               |
-| ------------------------------ | ------------ | ----------- | ----------------------------------- |
-| M0 - Squelette & Base UI       | Termine      | 100%        | DoD M0 validee                      |
-| M1 - Sections & Membres        | Termine      | 100%        | Backend + UI CRUD + validations OK  |
-| M2 - Cotisations               | Termine      | 100%        | Policy/paiements + UI + logs OK     |
-| M3 - Eligibilite               | Termine      | 100%        | Conditions + validation + calcul OK |
-| M4 - Elections & Candidats     | Termine      | 100%        | Cycle election + UI candidats OK    |
-| M5 - Vote + Confidentialite    | En cours     | 0%          | Prochaine etape                     |
-| M6 - Resultats, Exports, Audit | Non commence | 0%          | Depend de M5                        |
+| Milestone                      | Statut   | Progression | Notes                               |
+| ------------------------------ | -------- | ----------- | ----------------------------------- |
+| M0 - Squelette & Base UI       | Termine  | 100%        | DoD M0 validee                      |
+| M1 - Sections & Membres        | Termine  | 100%        | Backend + UI CRUD + validations OK  |
+| M2 - Cotisations               | Termine  | 100%        | Policy/paiements + UI + logs OK     |
+| M3 - Eligibilite               | Termine  | 100%        | Conditions + validation + calcul OK |
+| M4 - Elections & Candidats     | Termine  | 100%        | Cycle election + UI candidats OK    |
+| M5 - Vote + Confidentialite    | Termine  | 100%        | castVote transactionnel + UI vote   |
+| M6 - Resultats, Exports, Audit | En cours | 0%          | Prochaine etape                     |
 
-**Progression globale : 74%**
+**Progression globale : 88%**
 
 ---
 
-## Detail M4
+## Detail M5
 
-| Tache                                                              | Statut |
-| ------------------------------------------------------------------ | ------ |
-| Cloud Function `createElection`                                    | OK     |
-| Cloud Function `updateElection`                                    | OK     |
-| Cloud Function `openElection`                                      | OK     |
-| Cloud Function `closeElection`                                     | OK     |
-| Cloud Function `addCandidate`                                      | OK     |
-| Cloud Function `validateCandidate`                                 | OK     |
-| Cloud Function `removeCandidate`                                   | OK     |
-| Verification eligibilite candidat avant ajout                      | OK     |
-| Randomisation `displayOrder` a l'ouverture                         | OK     |
-| Ecran admin Elections (creation + ouverture/fermeture + candidats) | OK     |
-| Validation `pnpm format:check`                                     | OK     |
-| Validation `pnpm lint`                                             | OK     |
-| Validation `pnpm test`                                             | OK     |
-| Validation `pnpm typecheck`                                        | OK     |
-| Validation `pnpm build`                                            | OK     |
+| Tache                                             | Statut |
+| ------------------------------------------------- | ------ |
+| Cloud Function `castVote` (transaction)           | OK     |
+| Deadline stricte (`ERROR_ELECTION_CLOSED`)        | OK     |
+| Anti double vote (`tokenIndex/{memberId}`)        | OK     |
+| Ecriture bulletin anonyme (`ballots/{voteToken}`) | OK     |
+| Incrementation atomique `totalVotesCast`          | OK     |
+| Log `vote.cast` sans `candidateId`                | OK     |
+| Page membre Vote avec confirmation                | OK     |
+| Blocage vote si non eligibile                     | OK     |
+| Validation `pnpm format:check`                    | OK     |
+| Validation `pnpm lint`                            | OK     |
+| Validation `pnpm test`                            | OK     |
+| Validation `pnpm typecheck`                       | OK     |
+| Validation `pnpm build`                           | OK     |
 
 ---
 
@@ -55,3 +53,4 @@
 | 2026-02-07 | M2 livre : politique cotisations + paiements append-only + UI + tests  |
 | 2026-02-07 | M3 livre : conditions + validation + calcul eligibilite + UI + tests   |
 | 2026-02-07 | M4 livre : elections/candidats + ouverture/fermeture + UI + tests      |
+| 2026-02-07 | M5 livre : vote confidentiel transactionnel + UI membre + tests        |

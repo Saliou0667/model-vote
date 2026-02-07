@@ -194,12 +194,159 @@ export function MemberEligibilityPage() {
 }
 
 export function MemberVotePage() {
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const [selectedElectionId, setSelectedElectionId] = useState("");
+  const [candidateToConfirm, setCandidateToConfirm] = useState<Candidate | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
+  const openElections = useMemo(
+    () => (electionsQuery.data ?? []).filter((election) => election.status === "open"),
+    [electionsQuery.data],
+  );
+  const activeElectionId = selectedElectionId || openElections[0]?.id || "";
+  const activeElection = openElections.find((election) => election.id === activeElectionId) ?? null;
+
+  const candidatesQuery = useQuery({
+    queryKey: ["candidates", activeElectionId],
+    queryFn: () => fetchCandidates(activeElectionId),
+    enabled: Boolean(activeElectionId),
+  });
+
+  const eligibilityQuery = useQuery({
+    queryKey: ["eligibility", user?.uid, activeElectionId],
+    queryFn: async () => {
+      if (!user || !activeElectionId) return null;
+      return callFunction("computeEligibility", {
+        memberId: user.uid,
+        electionId: activeElectionId,
+      }) as Promise<{ eligible: boolean; reasons: Array<{ condition: string; detail: string; met: boolean }> }>;
+    },
+    enabled: Boolean(user && activeElectionId),
+  });
+
+  const voteMutation = useMutation({
+    mutationFn: async () => {
+      if (!activeElectionId || !candidateToConfirm) throw new Error("Selection invalide");
+      return callFunction("castVote", {
+        electionId: activeElectionId,
+        candidateId: candidateToConfirm.id,
+      });
+    },
+    onSuccess: async () => {
+      setError(null);
+      setFeedback("Votre vote est enregistre.");
+      setCandidateToConfirm(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+    },
+    onError: (mutationError) => {
+      setFeedback(null);
+      setError(getErrorMessage(mutationError));
+    },
+  });
+
   return (
-    <PlaceholderPage
-      title="Vote"
-      subtitle="Page de vote securisee, castVote via Cloud Function (M5)."
-      actionLabel="Confirmer mon vote"
-    />
+    <Stack spacing={2}>
+      <Typography variant="h4">Vote</Typography>
+      {feedback ? <Alert severity="success">{feedback}</Alert> : null}
+      {error ? <Alert severity="error">{error}</Alert> : null}
+
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="h6">Election ouverte</Typography>
+            {openElections.length === 0 ? (
+              <Alert severity="info">Aucune election ouverte pour le moment.</Alert>
+            ) : (
+              <>
+                <FormControl fullWidth>
+                  <InputLabel id="member-election">Election</InputLabel>
+                  <Select
+                    labelId="member-election"
+                    label="Election"
+                    value={activeElectionId}
+                    onChange={(event) => setSelectedElectionId(event.target.value)}
+                  >
+                    {openElections.map((election) => (
+                      <MenuItem key={election.id} value={election.id}>
+                        {election.title}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                {activeElection ? (
+                  <Alert severity="info">
+                    {`Cloture le ${activeElection.endAt?.toDate().toLocaleString("fr-FR")}`}
+                  </Alert>
+                ) : null}
+                {eligibilityQuery.data && !eligibilityQuery.data.eligible ? (
+                  <Alert severity="warning">{"Vous n'etes pas eligible pour cette election."}</Alert>
+                ) : null}
+              </>
+            )}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent>
+          <Typography variant="h6" mb={2}>
+            Candidats
+          </Typography>
+          {candidatesQuery.isLoading ? <Skeleton height={120} /> : null}
+          {(candidatesQuery.data?.length ?? 0) === 0 ? (
+            <Alert severity="info">Aucun candidat valide disponible.</Alert>
+          ) : null}
+          <Stack spacing={2}>
+            {candidatesQuery.data
+              ?.filter((candidate) => candidate.status === "validated")
+              .map((candidate) => (
+                <Card key={candidate.id} variant="outlined">
+                  <CardContent>
+                    <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
+                      <Box>
+                        <Typography variant="h6">{candidate.displayName}</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {candidate.sectionName || "-"}
+                        </Typography>
+                        <Typography variant="body2" mt={1}>
+                          {candidate.bio || "Aucune bio"}
+                        </Typography>
+                      </Box>
+                      <Box>
+                        <Button
+                          variant="contained"
+                          onClick={() => setCandidateToConfirm(candidate)}
+                          disabled={!eligibilityQuery.data?.eligible}
+                        >
+                          Voter pour ce candidat
+                        </Button>
+                      </Box>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))}
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Dialog open={Boolean(candidateToConfirm)} onClose={() => setCandidateToConfirm(null)}>
+        <DialogTitle>Confirmer le vote</DialogTitle>
+        <DialogContent>
+          <Typography>
+            {`Vous allez voter pour ${candidateToConfirm?.displayName}. Cette action est definitive.`}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCandidateToConfirm(null)}>Annuler</Button>
+          <Button variant="contained" onClick={() => voteMutation.mutate()} disabled={voteMutation.isPending}>
+            Confirmer
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Stack>
   );
 }
 

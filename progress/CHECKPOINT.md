@@ -17,22 +17,22 @@
 
 ## 2) Avancement
 
-- Milestone en cours: `M5`
+- Milestone en cours: `M6`
 - Derniere etape terminee:
-  - M4 backend: fonctions elections/candidats (create/update/open/close/add/validate/remove)
-  - M4 frontend: page elections admin complete
+  - M5 backend: `castVote` transactionnel (tokenIndex + ballots)
+  - M5 frontend: page vote membre avec confirmation
   - validations OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`
 - Prochaine etape immediate:
-  - demarrer M5 (castVote, confidentialite, page vote membre)
+  - demarrer M6 (resultats, exports, logs, audit, gestion admins)
 
 ---
 
 ## 3) Taches immediates (ordre de reprise)
 
-1. Ajouter la fonction M5 `castVote` transactionnelle (deadline, double vote, tokenIndex, ballots).
-2. Integrer page membre Vote avec confirmation.
-3. Verifier regles confidentiality `ballots/tokenIndex` et logs sans candidateId.
-4. Relancer validation complete et commit M5.
+1. Ajouter fonctions M6: `publishResults`, `getResults`, `exportResults`, `getAuditLogs`, `auditCheckVoter`, `auditRevealVote`.
+2. Integrer pages Resultats (membre/admin), Logs, Gestion admins, Audit superadmin.
+3. Verifier restrictions audit (motif obligatoire, superadmin only).
+4. Relancer validation complete et commit final M6.
 
 ---
 
