@@ -148,6 +148,37 @@ export async function fetchElections(): Promise<Election[]> {
   });
 }
 
+export async function fetchMemberVisibleElections(): Promise<Election[]> {
+  const q = query(collection(db, "elections"), where("status", "in", ["open", "published"]));
+  const snap = await getDocs(q);
+  const elections = snap.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      title: String(data.title ?? ""),
+      description: String(data.description ?? ""),
+      type: (data.type ?? "federal") as Election["type"],
+      status: (data.status ?? "draft") as Election["status"],
+      startAt: data.startAt,
+      endAt: data.endAt,
+      voterConditionIds: Array.isArray(data.voterConditionIds) ? data.voterConditionIds : [],
+      candidateConditionIds: Array.isArray(data.candidateConditionIds) ? data.candidateConditionIds : [],
+      allowedSectionIds: Array.isArray(data.allowedSectionIds) ? data.allowedSectionIds : null,
+      minSeniority: Number(data.minSeniority ?? 0),
+      totalEligibleVoters: Number(data.totalEligibleVoters ?? 0),
+      totalVotesCast: Number(data.totalVotesCast ?? 0),
+    };
+  });
+
+  return elections.sort((a, b) => {
+    const aDate = a.startAt?.toDate?.();
+    const bDate = b.startAt?.toDate?.();
+    const aTime = aDate ? aDate.getTime() : 0;
+    const bTime = bDate ? bDate.getTime() : 0;
+    return bTime - aTime;
+  });
+}
+
 export async function fetchCandidates(electionId: string): Promise<Candidate[]> {
   if (!electionId) return [];
   const q = query(collection(db, `elections/${electionId}/candidates`), orderBy("displayOrder", "asc"));

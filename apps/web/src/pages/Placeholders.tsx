@@ -30,6 +30,7 @@ import {
   fetchCandidates,
   fetchConditions,
   fetchElections,
+  fetchMemberVisibleElections,
   fetchMemberConditions,
   fetchMembers,
   fetchPayments,
@@ -52,6 +53,7 @@ const queryKeys = {
   payments: ["payments"] as const,
   conditions: ["conditions"] as const,
   elections: ["elections"] as const,
+  memberElections: ["memberElections"] as const,
 };
 
 function PlaceholderPage({ title, subtitle, actionLabel, loading = false }: PlaceholderPageProps) {
@@ -201,7 +203,10 @@ export function MemberVotePage() {
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
+  const electionsQuery = useQuery({
+    queryKey: queryKeys.memberElections,
+    queryFn: fetchMemberVisibleElections,
+  });
   const openElections = useMemo(
     () => (electionsQuery.data ?? []).filter((election) => election.status === "open"),
     [electionsQuery.data],
@@ -239,7 +244,7 @@ export function MemberVotePage() {
       setError(null);
       setFeedback("Votre vote est enregistre.");
       setCandidateToConfirm(null);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.memberElections });
     },
     onError: (mutationError) => {
       setFeedback(null);
@@ -252,6 +257,7 @@ export function MemberVotePage() {
       <Typography variant="h4">Vote</Typography>
       {feedback ? <Alert severity="success">{feedback}</Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
+      {electionsQuery.error ? <Alert severity="error">{getErrorMessage(electionsQuery.error)}</Alert> : null}
 
       <Card>
         <CardContent>
@@ -352,7 +358,10 @@ export function MemberVotePage() {
 
 export function MemberResultsPage() {
   const [selectedElectionId, setSelectedElectionId] = useState("");
-  const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
+  const electionsQuery = useQuery({
+    queryKey: queryKeys.memberElections,
+    queryFn: fetchMemberVisibleElections,
+  });
   const publishedElections = useMemo(
     () => (electionsQuery.data ?? []).filter((election) => election.status === "published"),
     [electionsQuery.data],
@@ -382,6 +391,7 @@ export function MemberResultsPage() {
   return (
     <Stack spacing={2}>
       <Typography variant="h4">Resultats</Typography>
+      {electionsQuery.error ? <Alert severity="error">{getErrorMessage(electionsQuery.error)}</Alert> : null}
       {publishedElections.length === 0 ? (
         <Alert severity="info">Aucun resultat publie.</Alert>
       ) : (
