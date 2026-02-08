@@ -28,6 +28,7 @@ function toMember(id: string, data: DocumentData): Member {
     email: String(data.email ?? ""),
     firstName: String(data.firstName ?? ""),
     lastName: String(data.lastName ?? ""),
+    city: String(data.city ?? ""),
     phone: String(data.phone ?? ""),
     sectionId: String(data.sectionId ?? ""),
     role: (data.role ?? "member") as Member["role"],

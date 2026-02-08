@@ -2,7 +2,7 @@ import { Route, Routes } from "react-router-dom";
 import { AdminLayout } from "../layouts/AdminLayout";
 import { AuthLayout } from "../layouts/AuthLayout";
 import { MemberLayout } from "../layouts/MemberLayout";
-import { LoginPage, RegisterPage, VerifyEmailPage } from "../pages/AuthPages";
+import { LoginPage, PendingApprovalPage, RegisterPage, VerifyEmailPage } from "../pages/AuthPages";
 import { NotFoundPage } from "../pages/NotFoundPage";
 import {
   AdminContributionsPage,
@@ -41,6 +41,17 @@ export function AppRouter() {
         }
       >
         <Route index element={<VerifyEmailPage />} />
+      </Route>
+
+      <Route
+        path="/pending-approval"
+        element={
+          <RequireSignedIn>
+            <AuthLayout />
+          </RequireSignedIn>
+        }
+      >
+        <Route index element={<PendingApprovalPage />} />
       </Route>
 
       <Route

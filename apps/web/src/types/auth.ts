@@ -10,9 +10,20 @@ export interface MemberProfile {
   status: MemberStatus;
   firstName?: string;
   lastName?: string;
+  city?: string;
   phone?: string;
   sectionId?: string;
 }
+
+export type SignUpPayload = {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  city: string;
+  phone: string;
+  sectionId?: string;
+};
 
 export interface AuthContextValue {
   user: User | null;
@@ -20,7 +31,7 @@ export interface AuthContextValue {
   profile: MemberProfile | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
+  signUp: (payload: SignUpPayload) => Promise<void>;
   signOutUser: () => Promise<void>;
   sendVerification: () => Promise<void>;
   refreshAuthState: () => Promise<void>;

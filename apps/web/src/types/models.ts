@@ -14,6 +14,7 @@ export type Member = {
   email: string;
   firstName: string;
   lastName: string;
+  city?: string;
   phone?: string;
   sectionId?: string;
   role: "member" | "admin" | "superadmin";

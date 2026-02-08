@@ -142,6 +142,19 @@ function createTempPassword(): string {
   return `${randomUUID()}!Aa1`;
 }
 
+function isProfileCompleted(member: {
+  firstName?: unknown;
+  lastName?: unknown;
+  city?: unknown;
+  phone?: unknown;
+}): boolean {
+  const firstName = typeof member.firstName === "string" ? member.firstName.trim() : "";
+  const lastName = typeof member.lastName === "string" ? member.lastName.trim() : "";
+  const city = typeof member.city === "string" ? member.city.trim() : "";
+  const phone = typeof member.phone === "string" ? member.phone.trim() : "";
+  return Boolean(firstName && lastName && city && phone);
+}
+
 async function getActiveContributionPolicy(): Promise<ActiveContributionPolicy | null> {
   const snap = await db.collection("contributionPolicies").where("isActive", "==", true).limit(1).get();
   if (snap.empty) return null;
@@ -264,6 +277,7 @@ export const ensureMemberProfile = onCall(async (request) => {
         emailVerified,
         firstName: "",
         lastName: "",
+        city: "",
         phone: "",
         sectionId: "",
         profileCompleted: false,
@@ -514,6 +528,20 @@ export const deleteSection = onCall(async (request) => {
   return ok({ sectionId });
 });
 
+export const listPublicSections = onCall(async () => {
+  const snap = await db.collection("sections").orderBy("name", "asc").get();
+  const sections = snap.docs.map((doc) => {
+    const data = doc.data() as { name?: string; city?: string; region?: string };
+    return {
+      id: doc.id,
+      name: String(data.name ?? ""),
+      city: String(data.city ?? ""),
+      region: String(data.region ?? ""),
+    };
+  });
+  return ok({ sections });
+});
+
 export const createMember = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
@@ -523,6 +551,7 @@ export const createMember = onCall(async (request) => {
   const email = requireString(request.data?.email, "email").toLowerCase();
   const firstName = requireString(request.data?.firstName, "firstName");
   const lastName = requireString(request.data?.lastName, "lastName");
+  const city = optionalString(request.data?.city) ?? "";
   const sectionId = requireString(request.data?.sectionId, "sectionId");
   const phone = optionalString(request.data?.phone) ?? "";
   const status = requireEnum<MemberStatus>(request.data?.status ?? "pending", "status", [
@@ -558,12 +587,13 @@ export const createMember = onCall(async (request) => {
         email,
         firstName,
         lastName,
+        city,
         phone,
         sectionId,
         role: "member",
         status,
         emailVerified: false,
-        profileCompleted: Boolean(firstName && lastName && sectionId),
+        profileCompleted: isProfileCompleted({ firstName, lastName, city, phone }),
         joinedAt: FieldValue.serverTimestamp(),
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
@@ -622,17 +652,19 @@ export const updateMember = onCall(async (request) => {
   if (typeof updatesInput.lastName === "string") {
     updates.lastName = updatesInput.lastName.trim();
   }
+  if (typeof updatesInput.city === "string") updates.city = updatesInput.city.trim();
   if (typeof updatesInput.phone === "string") updates.phone = updatesInput.phone.trim();
 
+  if (typeof updatesInput.sectionId === "string") {
+    updates.sectionId = updatesInput.sectionId.trim();
+  }
+
   if (!isSelf) {
-    if (typeof updatesInput.sectionId === "string") {
-      updates.sectionId = updatesInput.sectionId.trim();
-    }
     if (typeof updatesInput.status === "string") {
       updates.status = requireEnum<MemberStatus>(updatesInput.status, "status", ["pending", "active", "suspended"]);
     }
   } else {
-    const forbidden = ["sectionId", "status", "role"];
+    const forbidden = ["status", "role"];
     if (forbidden.some((f) => updatesInput[f] !== undefined)) {
       throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED");
     }
@@ -649,30 +681,45 @@ export const updateMember = onCall(async (request) => {
       throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
     }
 
-    const previous = memberSnap.data() as { sectionId?: string };
-    const nextSectionId = updates.sectionId as string | undefined;
-    if (nextSectionId && nextSectionId !== previous.sectionId) {
-      const nextSectionRef = db.collection("sections").doc(nextSectionId);
-      const currentSectionRef = previous.sectionId ? db.collection("sections").doc(previous.sectionId) : null;
-      const nextSectionSnap = await tx.get(nextSectionRef);
-      if (!nextSectionSnap.exists) {
-        throw new HttpsError("not-found", "ERROR_SECTION_NOT_FOUND");
+    const previous = memberSnap.data() as {
+      sectionId?: string;
+      firstName?: string;
+      lastName?: string;
+      city?: string;
+      phone?: string;
+    };
+    const previousSectionId = String(previous.sectionId ?? "").trim();
+    const hasSectionUpdate = Object.prototype.hasOwnProperty.call(updates, "sectionId");
+    const nextSectionId = hasSectionUpdate ? String(updates.sectionId ?? "").trim() : previousSectionId;
+
+    if (hasSectionUpdate && nextSectionId !== previousSectionId) {
+      if (nextSectionId) {
+        const nextSectionRef = db.collection("sections").doc(nextSectionId);
+        const nextSectionSnap = await tx.get(nextSectionRef);
+        if (!nextSectionSnap.exists) {
+          throw new HttpsError("not-found", "ERROR_SECTION_NOT_FOUND");
+        }
+        tx.update(nextSectionRef, {
+          memberCount: FieldValue.increment(1),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
       }
-      tx.update(nextSectionRef, {
-        memberCount: FieldValue.increment(1),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      if (currentSectionRef) {
+
+      if (previousSectionId) {
+        const currentSectionRef = db.collection("sections").doc(previousSectionId);
         tx.update(currentSectionRef, {
           memberCount: FieldValue.increment(-1),
           updatedAt: FieldValue.serverTimestamp(),
         });
       }
+
+      updates.sectionId = nextSectionId;
     }
 
+    const merged = { ...previous, ...updates };
     tx.update(memberRef, {
       ...updates,
-      profileCompleted: true,
+      profileCompleted: isProfileCompleted(merged),
       updatedAt: FieldValue.serverTimestamp(),
     });
     writeAuditTx(tx, {

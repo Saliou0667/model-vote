@@ -13,7 +13,7 @@ import { doc, getDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { auth, db, functions } from "../config/firebase";
 import type { ReactNode } from "react";
-import type { AuthContextValue, MemberProfile, UserRole } from "../types/auth";
+import type { AuthContextValue, MemberProfile, SignUpPayload, UserRole } from "../types/auth";
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -96,8 +96,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
       signIn: async (email, password) => {
         await signInWithEmailAndPassword(auth, email, password);
       },
-      signUp: async (email, password) => {
-        const cred = await createUserWithEmailAndPassword(auth, email, password);
+      signUp: async (payload: SignUpPayload) => {
+        const cred = await createUserWithEmailAndPassword(auth, payload.email.trim().toLowerCase(), payload.password);
+        const ensureMemberProfile = httpsCallable(functions, "ensureMemberProfile");
+        await ensureMemberProfile({});
+        const updateMember = httpsCallable(functions, "updateMember");
+        await updateMember({
+          memberId: cred.user.uid,
+          updates: {
+            firstName: payload.firstName,
+            lastName: payload.lastName,
+            city: payload.city,
+            phone: payload.phone,
+            sectionId: payload.sectionId ?? "",
+          },
+        });
         await sendEmailVerification(cred.user);
       },
       signOutUser: async () => {

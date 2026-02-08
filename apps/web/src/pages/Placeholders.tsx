@@ -98,12 +98,17 @@ export function MemberProfilePage() {
   const { user, profile, refreshAuthState } = useAuth();
   const [firstName, setFirstName] = useState<string | undefined>(undefined);
   const [lastName, setLastName] = useState<string | undefined>(undefined);
+  const [city, setCity] = useState<string | undefined>(undefined);
   const [phone, setPhone] = useState<string | undefined>(undefined);
+  const [sectionId, setSectionId] = useState<string | undefined>(undefined);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const sectionsQuery = useQuery({ queryKey: queryKeys.sections, queryFn: fetchSections });
   const firstNameValue = firstName ?? profile?.firstName ?? "";
   const lastNameValue = lastName ?? profile?.lastName ?? "";
+  const cityValue = city ?? profile?.city ?? "";
   const phoneValue = phone ?? profile?.phone ?? "";
+  const sectionValue = sectionId ?? profile?.sectionId ?? "";
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -113,7 +118,9 @@ export function MemberProfilePage() {
         updates: {
           firstName: firstNameValue,
           lastName: lastNameValue,
+          city: cityValue,
           phone: phoneValue,
+          sectionId: sectionValue,
         },
       });
     },
@@ -122,8 +129,11 @@ export function MemberProfilePage() {
       setFeedback("Profil mis a jour.");
       setFirstName(undefined);
       setLastName(undefined);
+      setCity(undefined);
       setPhone(undefined);
+      setSectionId(undefined);
       await queryClient.invalidateQueries({ queryKey: queryKeys.members });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.sections });
       await refreshAuthState();
     },
     onError: (mutationError) => {
@@ -142,7 +152,26 @@ export function MemberProfilePage() {
           <Stack spacing={2}>
             <TextField label="Prenom" value={firstNameValue} onChange={(event) => setFirstName(event.target.value)} />
             <TextField label="Nom" value={lastNameValue} onChange={(event) => setLastName(event.target.value)} />
+            <TextField label="Ville" value={cityValue} onChange={(event) => setCity(event.target.value)} />
             <TextField label="Telephone" value={phoneValue} onChange={(event) => setPhone(event.target.value)} />
+            <FormControl fullWidth>
+              <InputLabel id="member-profile-section">Section (optionnel)</InputLabel>
+              <Select
+                labelId="member-profile-section"
+                label="Section (optionnel)"
+                value={sectionValue}
+                onChange={(event) => setSectionId(event.target.value)}
+              >
+                <MenuItem value="">
+                  <em>Aucune section</em>
+                </MenuItem>
+                {sectionsQuery.data?.map((section) => (
+                  <MenuItem key={section.id} value={section.id}>
+                    {section.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
             <Button variant="contained" onClick={() => mutation.mutate()} disabled={mutation.isPending || !user}>
               Mettre a jour
             </Button>
@@ -788,6 +817,7 @@ export function AdminMembersPage() {
   const [email, setEmail] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [city, setCity] = useState("");
   const [phone, setPhone] = useState("");
   const [sectionId, setSectionId] = useState("");
   const [status, setStatus] = useState<Member["status"]>("pending");
@@ -799,6 +829,7 @@ export function AdminMembersPage() {
         email,
         firstName,
         lastName,
+        city,
         phone,
         sectionId,
         status,
@@ -808,6 +839,7 @@ export function AdminMembersPage() {
       setEmail("");
       setFirstName("");
       setLastName("");
+      setCity("");
       setPhone("");
       setStatus("pending");
       await queryClient.invalidateQueries({ queryKey: queryKeys.members });
@@ -824,6 +856,7 @@ export function AdminMembersPage() {
         updates: {
           firstName: editingMember.firstName,
           lastName: editingMember.lastName,
+          city: editingMember.city ?? "",
           phone: editingMember.phone ?? "",
           sectionId: editingMember.sectionId ?? "",
           status: editingMember.status,
@@ -835,6 +868,19 @@ export function AdminMembersPage() {
       setEditingMember(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.members });
       await queryClient.invalidateQueries({ queryKey: queryKeys.sections });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const reviewRegistrationMutation = useMutation({
+    mutationFn: ({ memberId, status }: { memberId: string; status: Member["status"] }) =>
+      callFunction("updateMember", {
+        memberId,
+        updates: { status },
+      }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.members });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -856,6 +902,11 @@ export function AdminMembersPage() {
     });
   }, [membersQuery.data, search, statusFilter, sectionFilter]);
 
+  const pendingMembers = useMemo(
+    () => (membersQuery.data ?? []).filter((member) => member.role === "member" && member.status === "pending"),
+    [membersQuery.data],
+  );
+
   return (
     <Stack spacing={2}>
       <Typography variant="h4">Membres</Typography>
@@ -874,6 +925,7 @@ export function AdminMembersPage() {
                 fullWidth
               />
               <TextField label="Nom" value={lastName} onChange={(event) => setLastName(event.target.value)} fullWidth />
+              <TextField label="Ville" value={city} onChange={(event) => setCity(event.target.value)} fullWidth />
             </Stack>
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
               <TextField label="Telephone" value={phone} onChange={(event) => setPhone(event.target.value)} fullWidth />
@@ -910,7 +962,7 @@ export function AdminMembersPage() {
               <Button
                 variant="contained"
                 onClick={() => createMutation.mutate()}
-                disabled={!email || !firstName || !lastName || !sectionId || createMutation.isPending}
+                disabled={!email || !firstName || !lastName || !city || !sectionId || createMutation.isPending}
               >
                 Ajouter un membre
               </Button>
@@ -968,6 +1020,60 @@ export function AdminMembersPage() {
       <Card>
         <CardContent>
           <Typography variant="h6" mb={2}>
+            Inscriptions en attente
+          </Typography>
+          {pendingMembers.length === 0 ? (
+            <Alert severity="info">Aucune inscription en attente.</Alert>
+          ) : (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Nom</TableCell>
+                  <TableCell>Email</TableCell>
+                  <TableCell>Ville</TableCell>
+                  <TableCell>Section</TableCell>
+                  <TableCell align="right">Decision</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {pendingMembers.map((member) => (
+                  <TableRow key={member.id}>
+                    <TableCell>{`${member.firstName} ${member.lastName}`}</TableCell>
+                    <TableCell>{member.email}</TableCell>
+                    <TableCell>{member.city || "-"}</TableCell>
+                    <TableCell>{sectionLabel.get(member.sectionId ?? "") ?? "-"}</TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={1} justifyContent="flex-end">
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={() => reviewRegistrationMutation.mutate({ memberId: member.id, status: "active" })}
+                          disabled={reviewRegistrationMutation.isPending}
+                        >
+                          Accepter
+                        </Button>
+                        <Button
+                          size="small"
+                          color="warning"
+                          variant="outlined"
+                          onClick={() => reviewRegistrationMutation.mutate({ memberId: member.id, status: "suspended" })}
+                          disabled={reviewRegistrationMutation.isPending}
+                        >
+                          Refuser
+                        </Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent>
+          <Typography variant="h6" mb={2}>
             Liste des membres
           </Typography>
           {membersQuery.isLoading ? <Skeleton height={120} /> : null}
@@ -980,6 +1086,7 @@ export function AdminMembersPage() {
                 <TableRow>
                   <TableCell>Nom</TableCell>
                   <TableCell>Email</TableCell>
+                  <TableCell>Ville</TableCell>
                   <TableCell>Section</TableCell>
                   <TableCell>Cotisation</TableCell>
                   <TableCell>Role</TableCell>
@@ -992,6 +1099,7 @@ export function AdminMembersPage() {
                   <TableRow key={member.id}>
                     <TableCell>{`${member.firstName} ${member.lastName}`}</TableCell>
                     <TableCell>{member.email}</TableCell>
+                    <TableCell>{member.city || "-"}</TableCell>
                     <TableCell>{sectionLabel.get(member.sectionId ?? "") ?? "-"}</TableCell>
                     <TableCell>{member.contributionUpToDate ? "A jour" : "En retard"}</TableCell>
                     <TableCell>{member.role}</TableCell>
@@ -1028,6 +1136,11 @@ export function AdminMembersPage() {
                 label="Telephone"
                 value={editingMember.phone ?? ""}
                 onChange={(event) => setEditingMember({ ...editingMember, phone: event.target.value })}
+              />
+              <TextField
+                label="Ville"
+                value={editingMember.city ?? ""}
+                onChange={(event) => setEditingMember({ ...editingMember, city: event.target.value })}
               />
               <FormControl fullWidth>
                 <InputLabel id="edit-section">Section</InputLabel>
