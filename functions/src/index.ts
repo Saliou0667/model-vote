@@ -1408,30 +1408,50 @@ export const castVote = onCall(async (request) => {
   const candidateRef = db.collection(`elections/${electionId}/candidates`).doc(candidateId);
   const tokenIndexRef = db.collection(`elections/${electionId}/tokenIndex`).doc(actorUid);
 
-  await db.runTransaction(async (tx) => {
-    const electionSnap = await tx.get(electionRef);
-    if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
-    const election = electionSnap.data() as {
-      status?: string;
-      endAt?: { toDate?: () => Date };
-      voterConditionIds?: string[];
-      minSeniority?: number;
-      allowedSectionIds?: string[] | null;
-    };
+  const electionSnap = await electionRef.get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const election = electionSnap.data() as {
+    status?: string;
+    endAt?: { toDate?: () => Date };
+    voterConditionIds?: string[];
+    minSeniority?: number;
+    allowedSectionIds?: string[] | null;
+  };
 
-    if (election.status !== "open") {
+  if (election.status !== "open") {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_OPEN");
+  }
+  const endAt = election.endAt?.toDate?.();
+  if (!endAt || endAt.getTime() <= Date.now()) {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_CLOSED");
+  }
+
+  const strictEligibility = await checkMemberAgainstRules({
+    memberId: actorUid,
+    conditionIds: election.voterConditionIds ?? [],
+    minSeniority: election.minSeniority ?? 0,
+    allowedSectionIds: election.allowedSectionIds ?? null,
+  });
+  if (!strictEligibility.eligible) {
+    throw new HttpsError("failed-precondition", "ERROR_NOT_ELIGIBLE");
+  }
+
+  await db.runTransaction(async (tx) => {
+    const electionSnapTx = await tx.get(electionRef);
+    if (!electionSnapTx.exists) {
+      throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+    }
+    const electionTx = electionSnapTx.data() as { status?: string; endAt?: { toDate?: () => Date } };
+    if (electionTx.status !== "open") {
       throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_OPEN");
     }
-    const endAt = election.endAt?.toDate?.();
-    if (!endAt || endAt.getTime() <= Date.now()) {
+    const endAtTx = electionTx.endAt?.toDate?.();
+    if (!endAtTx || endAtTx.getTime() <= Date.now()) {
       throw new HttpsError("failed-precondition", "ERROR_ELECTION_CLOSED");
     }
 
     const candidateSnap = await tx.get(candidateRef);
-    if (!candidateSnap.exists) {
-      throw new HttpsError("not-found", "ERROR_CANDIDATE_NOT_FOUND");
-    }
-    if (candidateSnap.data()?.status !== "validated") {
+    if (!candidateSnap.exists || candidateSnap.data()?.status !== "validated") {
       throw new HttpsError("failed-precondition", "ERROR_CANDIDATE_NOT_FOUND");
     }
 
@@ -1440,41 +1460,10 @@ export const castVote = onCall(async (request) => {
     if (tokenIndexSnap.exists && existing?.hasVoted) {
       throw new HttpsError("already-exists", "ERROR_ALREADY_VOTED");
     }
-  });
-
-  const eligibility = await checkMemberAgainstRules({
-    memberId: actorUid,
-    conditionIds: [],
-  });
-  if (!eligibility.eligible) {
-    const electionSnap = await electionRef.get();
-    const election = electionSnap.data() as {
-      voterConditionIds?: string[];
-      minSeniority?: number;
-      allowedSectionIds?: string[] | null;
-    };
-    const strictEligibility = await checkMemberAgainstRules({
-      memberId: actorUid,
-      conditionIds: election?.voterConditionIds ?? [],
-      minSeniority: election?.minSeniority ?? 0,
-      allowedSectionIds: election?.allowedSectionIds ?? null,
-    });
-    if (!strictEligibility.eligible) {
-      throw new HttpsError("failed-precondition", "ERROR_NOT_ELIGIBLE");
-    }
-  }
-
-  await db.runTransaction(async (tx) => {
-    const tokenIndexRefTx = db.collection(`elections/${electionId}/tokenIndex`).doc(actorUid);
-    const tokenIndexSnap = await tx.get(tokenIndexRefTx);
-    const existing = tokenIndexSnap.data() as { hasVoted?: boolean } | undefined;
-    if (tokenIndexSnap.exists && existing?.hasVoted) {
-      throw new HttpsError("already-exists", "ERROR_ALREADY_VOTED");
-    }
 
     const voteToken = randomUUID();
     const ballotRef = db.collection(`elections/${electionId}/ballots`).doc(voteToken);
-    tx.set(tokenIndexRefTx, {
+    tx.set(tokenIndexRef, {
       voteToken,
       issuedAt: FieldValue.serverTimestamp(),
       hasVoted: true,
