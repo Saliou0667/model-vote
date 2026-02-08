@@ -1617,6 +1617,7 @@ export function AdminContributionsPage() {
 }
 
 export function AdminElectionsPage() {
+  const { role } = useAuth();
   const queryClient = useQueryClient();
   const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
   const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
@@ -1638,10 +1639,21 @@ export function AdminElectionsPage() {
   const [candidateConditionIds, setCandidateConditionIds] = useState<string[]>([]);
 
   const [selectedElectionId, setSelectedElectionId] = useState("");
+  const [managedVoterConditionIds, setManagedVoterConditionIds] = useState<string[]>([]);
+  const [managedCandidateConditionIds, setManagedCandidateConditionIds] = useState<string[]>([]);
   const [candidateMemberId, setCandidateMemberId] = useState("");
   const [candidateBio, setCandidateBio] = useState("");
   const [exportContent, setExportContent] = useState("");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+
+  const selectedElection = useMemo(
+    () => (electionsQuery.data ?? []).find((election) => election.id === selectedElectionId) ?? null,
+    [electionsQuery.data, selectedElectionId],
+  );
+  const canEditSelectedElectionConditions = Boolean(
+    selectedElection &&
+      (role === "superadmin" || selectedElection.status === "draft" || selectedElection.status === "open"),
+  );
 
   const candidatesQuery = useQuery({
     queryKey: ["candidates", selectedElectionId],
@@ -1686,6 +1698,23 @@ export function AdminElectionsPage() {
       setCandidateMemberId("");
       setCandidateBio("");
       await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const updateElectionConditionsMutation = useMutation({
+    mutationFn: () =>
+      callFunction("updateElection", {
+        electionId: selectedElectionId,
+        updates: {
+          voterConditionIds: managedVoterConditionIds,
+          candidateConditionIds: managedCandidateConditionIds,
+        },
+      }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.memberElections });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -1916,7 +1945,15 @@ export function AdminElectionsPage() {
                     <TableCell>{election.endAt?.toDate().toLocaleString("fr-FR")}</TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={1} justifyContent="flex-end">
-                        <Button size="small" variant="outlined" onClick={() => setSelectedElectionId(election.id)}>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => {
+                            setSelectedElectionId(election.id);
+                            setManagedVoterConditionIds(election.voterConditionIds ?? []);
+                            setManagedCandidateConditionIds(election.candidateConditionIds ?? []);
+                          }}
+                        >
                           Gerer
                         </Button>
                         <Button
@@ -1972,6 +2009,69 @@ export function AdminElectionsPage() {
         <Card>
           <CardContent>
             <Stack spacing={2}>
+              <Typography variant="h6">Parametres de l'election</Typography>
+              <Alert severity="info">
+                {selectedElection?.status === "open"
+                  ? "Election ouverte: vous pouvez encore ajuster les conditions de vote/candidat."
+                  : "Utilisez ce panneau pour modifier les conditions de cette election."}
+              </Alert>
+              {!canEditSelectedElectionConditions ? (
+                <Alert severity="warning">Cette election est verrouillee pour les modifications de conditions.</Alert>
+              ) : null}
+              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                <FormControl fullWidth>
+                  <InputLabel id="manage-voter-conditions">Conditions vote</InputLabel>
+                  <Select
+                    labelId="manage-voter-conditions"
+                    label="Conditions vote"
+                    multiple
+                    value={managedVoterConditionIds}
+                    onChange={(event) =>
+                      setManagedVoterConditionIds(
+                        typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                      )
+                    }
+                    disabled={!canEditSelectedElectionConditions || updateElectionConditionsMutation.isPending}
+                  >
+                    {conditionsQuery.data?.map((condition) => (
+                      <MenuItem key={condition.id} value={condition.id}>
+                        {condition.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth>
+                  <InputLabel id="manage-candidate-conditions">Conditions candidat</InputLabel>
+                  <Select
+                    labelId="manage-candidate-conditions"
+                    label="Conditions candidat"
+                    multiple
+                    value={managedCandidateConditionIds}
+                    onChange={(event) =>
+                      setManagedCandidateConditionIds(
+                        typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                      )
+                    }
+                    disabled={!canEditSelectedElectionConditions || updateElectionConditionsMutation.isPending}
+                  >
+                    {conditionsQuery.data?.map((condition) => (
+                      <MenuItem key={condition.id} value={condition.id}>
+                        {condition.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Stack>
+              <Box>
+                <Button
+                  variant="contained"
+                  onClick={() => updateElectionConditionsMutation.mutate()}
+                  disabled={!canEditSelectedElectionConditions || updateElectionConditionsMutation.isPending}
+                >
+                  Enregistrer les conditions
+                </Button>
+              </Box>
+
               <Typography variant="h6">Gestion des candidats</Typography>
               <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                 <FormControl fullWidth>

@@ -1139,7 +1139,8 @@ export const updateElection = onCall(async (request) => {
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
   const election = electionSnap.data() as { status?: string };
-  if (election.status !== "draft" && actorRole !== "superadmin") {
+  const status = String(election.status ?? "draft");
+  if (status !== "draft" && status !== "open" && actorRole !== "superadmin") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
   }
 
@@ -1164,6 +1165,14 @@ export const updateElection = onCall(async (request) => {
   }
   if (Object.keys(updates).length === 0) {
     throw new HttpsError("invalid-argument", "Invalid updates.");
+  }
+
+  if (status === "open" && actorRole !== "superadmin") {
+    const allowedInOpen = new Set(["voterConditionIds", "candidateConditionIds"]);
+    const forbidden = Object.keys(updates).filter((field) => !allowedInOpen.has(field));
+    if (forbidden.length > 0) {
+      throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
+    }
   }
 
   updates.updatedAt = FieldValue.serverTimestamp();
