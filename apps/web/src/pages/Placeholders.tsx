@@ -155,13 +155,24 @@ export function MemberProfilePage() {
 
 export function MemberEligibilityPage() {
   const { user } = useAuth();
+  const [selectedElectionId, setSelectedElectionId] = useState("");
+  const electionsQuery = useQuery({
+    queryKey: queryKeys.memberElections,
+    queryFn: fetchMemberVisibleElections,
+  });
+  const openElections = useMemo(
+    () => (electionsQuery.data ?? []).filter((election) => election.status === "open"),
+    [electionsQuery.data],
+  );
+  const activeElectionId = selectedElectionId || openElections[0]?.id || "";
+
   const eligibilityQuery = useQuery({
-    queryKey: ["eligibility", user?.uid],
+    queryKey: ["eligibility", user?.uid, activeElectionId || "general"],
     queryFn: async () => {
       if (!user) return null;
-      return callFunction("computeEligibility", {
-        memberId: user.uid,
-      }) as Promise<{
+      const payload: { memberId: string; electionId?: string } = { memberId: user.uid };
+      if (activeElectionId) payload.electionId = activeElectionId;
+      return callFunction("computeEligibility", payload) as Promise<{
         eligible: boolean;
         reasons: Array<{ condition: string; met: boolean; detail: string }>;
       }>;
@@ -172,11 +183,44 @@ export function MemberEligibilityPage() {
   return (
     <Stack spacing={2}>
       <Typography variant="h4">Mon eligibilite</Typography>
+      {electionsQuery.error ? <Alert severity="error">{getErrorMessage(electionsQuery.error)}</Alert> : null}
+      {openElections.length > 0 ? (
+        <Card>
+          <CardContent>
+            <Stack spacing={2}>
+              <Typography variant="h6">Election en cours</Typography>
+              <FormControl fullWidth>
+                <InputLabel id="eligibility-election">Election</InputLabel>
+                <Select
+                  labelId="eligibility-election"
+                  label="Election"
+                  value={activeElectionId}
+                  onChange={(event) => setSelectedElectionId(event.target.value)}
+                >
+                  {openElections.map((election) => (
+                    <MenuItem key={election.id} value={election.id}>
+                      {election.title}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Stack>
+          </CardContent>
+        </Card>
+      ) : (
+        <Alert severity="info">Aucune election ouverte. Affichage de l'eligibilite generale.</Alert>
+      )}
       {eligibilityQuery.isLoading ? <Skeleton height={120} /> : null}
       {eligibilityQuery.error ? <Alert severity="error">{getErrorMessage(eligibilityQuery.error)}</Alert> : null}
       {eligibilityQuery.data ? (
         <Alert severity={eligibilityQuery.data.eligible ? "success" : "warning"}>
-          {eligibilityQuery.data.eligible ? "Vous etes eligible." : "Vous n'etes pas encore eligible."}
+          {eligibilityQuery.data.eligible
+            ? activeElectionId
+              ? "Vous etes eligible pour cette election."
+              : "Vous etes eligible."
+            : activeElectionId
+              ? "Vous n'etes pas encore eligible pour cette election."
+              : "Vous n'etes pas encore eligible."}
         </Alert>
       ) : null}
       <Card>
