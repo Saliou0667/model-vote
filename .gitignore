@@ -11,6 +11,9 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 pubsub-debug.log
+dev-live.log
+dev-live.out.log
+dev-live.err.log
 firebase.emu.test.json
 
 # Environment

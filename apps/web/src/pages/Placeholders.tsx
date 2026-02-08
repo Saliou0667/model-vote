@@ -196,13 +196,15 @@ export function MemberEligibilityPage() {
     return map;
   }, [activeConditions]);
 
-  const expectedConditionIds = useMemo(() => {
+  const requiredConditionIds = useMemo(() => {
     if (activeElection) {
       const required = activeElection.voterConditionIds ?? [];
       return required.filter((conditionId) => conditionLabel.has(conditionId));
     }
     return activeConditions.map((condition) => condition.id);
   }, [activeConditions, activeElection, conditionLabel]);
+
+  const activeConditionIds = useMemo(() => activeConditions.map((condition) => condition.id), [activeConditions]);
 
   const conditionReasons = useMemo(() => {
     const map = new Map<string, { met: boolean; detail: string }>();
@@ -218,6 +220,13 @@ export function MemberEligibilityPage() {
     () => (eligibilityQuery.data?.reasons ?? []).filter((reason) => !reason.condition.startsWith("condition_")),
     [eligibilityQuery.data?.reasons],
   );
+
+  const systemReasonLabels: Record<string, string> = {
+    member_status: "Statut membre",
+    contribution: "Cotisation",
+    seniority: "Anciennete",
+    section: "Section",
+  };
 
   return (
     <Stack spacing={2}>
@@ -266,18 +275,21 @@ export function MemberEligibilityPage() {
       <Card>
         <CardContent>
           <Stack spacing={2}>
-            <Typography variant="h6">Conditions du catalogue</Typography>
-            {expectedConditionIds.length === 0 ? (
-              <Alert severity="info">Aucune condition active sur cette election.</Alert>
+            <Typography variant="h6">Conditions du catalogue (actives)</Typography>
+            {activeConditionIds.length === 0 ? (
+              <Alert severity="info">Aucune condition active dans le catalogue.</Alert>
             ) : (
-              expectedConditionIds.map((conditionId) => {
+              activeConditionIds.map((conditionId) => {
                 const result = conditionReasons.get(conditionId);
-                const met = result?.met ?? false;
-                const detail = result?.detail ?? "Condition non validee ou expiree";
+                const required = requiredConditionIds.includes(conditionId);
+                const met = required ? (result?.met ?? false) : (result?.met ?? false);
+                const detail =
+                  result?.detail ??
+                  (required ? "Condition non validee ou expiree" : "Condition active mais non requise pour cette election");
                 const label = conditionLabel.get(conditionId) ?? conditionId;
                 return (
-                  <Alert key={conditionId} severity={met ? "success" : "info"}>
-                    {`${label}: ${detail}`}
+                  <Alert key={conditionId} severity={met ? "success" : required ? "warning" : "info"}>
+                    {required ? `${label}: ${detail}` : `${label}: ${detail} (optionnelle ici)`}
                   </Alert>
                 );
               })
@@ -286,10 +298,9 @@ export function MemberEligibilityPage() {
               <>
                 <Typography variant="h6">Criteres automatiques</Typography>
                 {systemReasons.map((reason) => (
-                  <Alert
-                    key={reason.condition}
-                    severity={reason.met ? "success" : "info"}
-                  >{`${reason.condition}: ${reason.detail}`}</Alert>
+                  <Alert key={reason.condition} severity={reason.met ? "success" : "warning"}>
+                    {`${systemReasonLabels[reason.condition] ?? reason.condition}: ${reason.detail}`}
+                  </Alert>
                 ))}
               </>
             ) : null}
