@@ -19,7 +19,6 @@ export function AppEntryRedirect() {
   const { loading, user, role, profile } = useAuth();
   if (loading) return <Loader />;
   if (!user) return <Navigate to="/auth/login" replace />;
-  if (!user.emailVerified) return <Navigate to="/verify-email" replace />;
   if (role === "admin" || role === "superadmin") return <Navigate to="/admin" replace />;
   if (profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
   return <Navigate to="/member" replace />;
@@ -29,7 +28,6 @@ export function RequireAuth({ children }: GuardProps) {
   const { loading, user, role, profile } = useAuth();
   if (loading) return <Loader />;
   if (!user) return <Navigate to="/auth/login" replace />;
-  if (!user.emailVerified) return <Navigate to="/verify-email" replace />;
   if (role === "member" && profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
   return <>{children}</>;
 }
@@ -45,7 +43,6 @@ export function RequireAdmin({ children }: GuardProps) {
   const { loading, user, role } = useAuth();
   if (loading) return <Loader />;
   if (!user) return <Navigate to="/auth/login" replace />;
-  if (!user.emailVerified) return <Navigate to="/verify-email" replace />;
   if (role !== "admin" && role !== "superadmin") return <Navigate to="/member" replace />;
   return <>{children}</>;
 }
@@ -54,7 +51,6 @@ export function RequireSuperAdmin({ children }: GuardProps) {
   const { loading, user, role } = useAuth();
   if (loading) return <Loader />;
   if (!user) return <Navigate to="/auth/login" replace />;
-  if (!user.emailVerified) return <Navigate to="/verify-email" replace />;
   if (role !== "superadmin") return <Navigate to="/admin" replace />;
   return <>{children}</>;
 }

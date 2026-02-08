@@ -110,8 +110,8 @@ export function RegisterPage() {
         phone: values.phone,
         sectionId: sectionId.trim() || undefined,
       });
-      setSuccess("Compte cree. Email de verification envoye.");
-      navigate("/verify-email", { replace: true });
+      setSuccess("Compte cree. Votre inscription est en attente de validation admin.");
+      navigate("/pending-approval", { replace: true });
     } catch (err) {
       setError((err as Error).message || "Inscription impossible");
     }
@@ -280,7 +280,6 @@ export function PendingApprovalPage() {
   });
 
   if (!user) return <Navigate to="/auth/login" replace />;
-  if (!user.emailVerified) return <Navigate to="/verify-email" replace />;
   if (role === "admin" || role === "superadmin") return <Navigate to="/admin" replace />;
   if (profile?.status === "active") return <Navigate to="/member" replace />;
 

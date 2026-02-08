@@ -4,7 +4,6 @@ import {
   createUserWithEmailAndPassword,
   getIdTokenResult,
   onAuthStateChanged,
-  sendEmailVerification,
   signInWithEmailAndPassword,
   signOut,
 } from "firebase/auth";
@@ -111,14 +110,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
             sectionId: payload.sectionId ?? "",
           },
         });
-        await sendEmailVerification(cred.user);
       },
       signOutUser: async () => {
         await signOut(auth);
       },
       sendVerification: async () => {
-        if (!auth.currentUser) return;
-        await sendEmailVerification(auth.currentUser);
+        // Verification email disabled in this workflow (admin approval is authoritative).
       },
       refreshAuthState,
     }),
