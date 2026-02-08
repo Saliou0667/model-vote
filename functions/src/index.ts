@@ -174,6 +174,23 @@ function memberConditionDocId(memberId: string, conditionId: string): string {
   return `${memberId}_${conditionId}`;
 }
 
+async function getActiveConditionIds(conditionIds: string[]): Promise<string[]> {
+  const normalized = [...new Set(conditionIds.map((id) => id.trim()).filter(Boolean))];
+  if (normalized.length === 0) return [];
+
+  const active = await Promise.all(
+    normalized.map(async (conditionId) => {
+      const snap = await db.collection("conditions").doc(conditionId).get();
+      if (!snap.exists) return null;
+      const data = snap.data() as { isActive?: boolean } | undefined;
+      const isActive = data?.isActive ?? true;
+      return isActive ? conditionId : null;
+    }),
+  );
+
+  return active.filter((conditionId): conditionId is string => Boolean(conditionId));
+}
+
 async function checkMemberAgainstRules(input: {
   memberId: string;
   conditionIds: string[];
@@ -209,7 +226,8 @@ async function checkMemberAgainstRules(input: {
     }
   }
 
-  for (const conditionId of input.conditionIds) {
+  const activeConditionIds = await getActiveConditionIds(input.conditionIds);
+  for (const conditionId of activeConditionIds) {
     const docId = memberConditionDocId(input.memberId, conditionId);
     const snap = await db.collection("memberConditions").doc(docId).get();
     const data = snap.data() as { validated?: boolean; expiresAt?: { toDate?: () => Date } };
@@ -1016,7 +1034,7 @@ export const computeEligibility = onCall(async (request) => {
       detail: sectionOk ? "Section autorisee" : "Section non autorisee",
     });
 
-    requiredConditionIds = election.voterConditionIds ?? [];
+    requiredConditionIds = await getActiveConditionIds(election.voterConditionIds ?? []);
   } else {
     const activeConditions = await db.collection("conditions").where("isActive", "==", true).get();
     requiredConditionIds = activeConditions.docs.map((doc) => doc.id);

@@ -160,11 +160,16 @@ export function MemberEligibilityPage() {
     queryKey: queryKeys.memberElections,
     queryFn: fetchMemberVisibleElections,
   });
+  const conditionsQuery = useQuery({
+    queryKey: queryKeys.conditions,
+    queryFn: fetchConditions,
+  });
   const openElections = useMemo(
     () => (electionsQuery.data ?? []).filter((election) => election.status === "open"),
     [electionsQuery.data],
   );
   const activeElectionId = selectedElectionId || openElections[0]?.id || "";
+  const activeElection = openElections.find((election) => election.id === activeElectionId) ?? null;
 
   const eligibilityQuery = useQuery({
     queryKey: ["eligibility", user?.uid, activeElectionId || "general"],
@@ -180,10 +185,45 @@ export function MemberEligibilityPage() {
     enabled: Boolean(user),
   });
 
+  const activeConditions = useMemo(
+    () => (conditionsQuery.data ?? []).filter((condition) => condition.isActive),
+    [conditionsQuery.data],
+  );
+
+  const conditionLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    activeConditions.forEach((condition) => map.set(condition.id, condition.name));
+    return map;
+  }, [activeConditions]);
+
+  const expectedConditionIds = useMemo(() => {
+    if (activeElection) {
+      const required = activeElection.voterConditionIds ?? [];
+      return required.filter((conditionId) => conditionLabel.has(conditionId));
+    }
+    return activeConditions.map((condition) => condition.id);
+  }, [activeConditions, activeElection, conditionLabel]);
+
+  const conditionReasons = useMemo(() => {
+    const map = new Map<string, { met: boolean; detail: string }>();
+    for (const reason of eligibilityQuery.data?.reasons ?? []) {
+      if (!reason.condition.startsWith("condition_")) continue;
+      const normalized = reason.condition.replace(/^condition_/, "").replace(/_missing$/, "");
+      map.set(normalized, { met: reason.met, detail: reason.detail });
+    }
+    return map;
+  }, [eligibilityQuery.data?.reasons]);
+
+  const systemReasons = useMemo(
+    () => (eligibilityQuery.data?.reasons ?? []).filter((reason) => !reason.condition.startsWith("condition_")),
+    [eligibilityQuery.data?.reasons],
+  );
+
   return (
     <Stack spacing={2}>
       <Typography variant="h4">Mon eligibilite</Typography>
       {electionsQuery.error ? <Alert severity="error">{getErrorMessage(electionsQuery.error)}</Alert> : null}
+      {conditionsQuery.error ? <Alert severity="error">{getErrorMessage(conditionsQuery.error)}</Alert> : null}
       {openElections.length > 0 ? (
         <Card>
           <CardContent>
@@ -225,13 +265,34 @@ export function MemberEligibilityPage() {
       ) : null}
       <Card>
         <CardContent>
-          <Stack spacing={1.5}>
-            {(eligibilityQuery.data?.reasons ?? []).map((reason) => (
-              <Alert
-                key={reason.condition}
-                severity={reason.met ? "success" : "info"}
-              >{`${reason.condition}: ${reason.detail}`}</Alert>
-            ))}
+          <Stack spacing={2}>
+            <Typography variant="h6">Conditions du catalogue</Typography>
+            {expectedConditionIds.length === 0 ? (
+              <Alert severity="info">Aucune condition active sur cette election.</Alert>
+            ) : (
+              expectedConditionIds.map((conditionId) => {
+                const result = conditionReasons.get(conditionId);
+                const met = result?.met ?? false;
+                const detail = result?.detail ?? "Condition non validee ou expiree";
+                const label = conditionLabel.get(conditionId) ?? conditionId;
+                return (
+                  <Alert key={conditionId} severity={met ? "success" : "info"}>
+                    {`${label}: ${detail}`}
+                  </Alert>
+                );
+              })
+            )}
+            {systemReasons.length > 0 ? (
+              <>
+                <Typography variant="h6">Criteres automatiques</Typography>
+                {systemReasons.map((reason) => (
+                  <Alert
+                    key={reason.condition}
+                    severity={reason.met ? "success" : "info"}
+                  >{`${reason.condition}: ${reason.detail}`}</Alert>
+                ))}
+              </>
+            ) : null}
           </Stack>
         </CardContent>
       </Card>
