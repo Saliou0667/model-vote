@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.28.2",
   "scripts": {
-    "dev": "pnpm --filter @model/functions build && concurrently -k -n web,emu -c cyan,magenta \"pnpm --filter web dev\" \"firebase emulators:start --project model-vote-fr-2026 --only \\\"auth,firestore,functions\\\"\"",
+    "dev": "pnpm --filter @model/functions build && concurrently -k -n web,emu -c cyan,magenta \"pnpm --filter web dev\" \"firebase emulators:start --project model-vote-fr-2026 --only \\\"auth,firestore,functions\\\" --import ./.emulator-data --export-on-exit\"",
     "build": "pnpm --filter web build && pnpm --filter @model/functions build",
     "lint": "pnpm --filter web lint && pnpm --filter @model/functions lint",
     "test": "pnpm --filter web test",
@@ -14,7 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "deploy": "firebase deploy --project model-vote-fr-2026 --only hosting,functions,firestore:rules,firestore:indexes",
-    "emulators": "pnpm --filter @model/functions build && firebase emulators:start --project model-vote-fr-2026 --only \"auth,firestore,functions\""
+    "emulators": "pnpm --filter @model/functions build && firebase emulators:start --project model-vote-fr-2026 --only \"auth,firestore,functions\" --import ./.emulator-data --export-on-exit"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

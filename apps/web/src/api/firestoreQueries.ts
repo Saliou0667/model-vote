@@ -192,6 +192,8 @@ export async function fetchCandidates(electionId: string): Promise<Candidate[]> 
       displayName: String(data.displayName ?? ""),
       sectionName: String(data.sectionName ?? ""),
       bio: String(data.bio ?? ""),
+      projectSummary: String(data.projectSummary ?? ""),
+      videoUrl: String(data.videoUrl ?? ""),
       photoUrl: String(data.photoUrl ?? ""),
       status: (data.status ?? "proposed") as Candidate["status"],
       displayOrder: Number(data.displayOrder ?? 0),

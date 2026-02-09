@@ -53,8 +53,9 @@ export function LoginPage() {
   });
 
   return (
-    <Stack component="form" spacing={2} onSubmit={onSubmit}>
+    <Stack component="form" spacing={2.1} onSubmit={onSubmit}>
       <Typography variant="h5">Connexion</Typography>
+      <Typography color="text.secondary">Accedez a votre espace securise MODEL Vote.</Typography>
       {error ? <Alert severity="error">{error}</Alert> : null}
       <TextField
         label="Email"
@@ -73,7 +74,7 @@ export function LoginPage() {
       <Button type="submit" variant="contained" disabled={isSubmitting}>
         Se connecter
       </Button>
-      <Button component={RouterLink} to="/auth/register" variant="text">
+      <Button component={RouterLink} to="/auth/register" variant="text" fullWidth>
         Creer un compte
       </Button>
     </Stack>
@@ -118,8 +119,9 @@ export function RegisterPage() {
   });
 
   return (
-    <Stack component="form" spacing={2} onSubmit={onSubmit}>
+    <Stack component="form" spacing={2.1} onSubmit={onSubmit}>
       <Typography variant="h5">Inscription</Typography>
+      <Typography color="text.secondary">Creez votre compte membre. Validation finale par un administrateur.</Typography>
       {error ? <Alert severity="error">{error}</Alert> : null}
       {success ? <Alert severity="success">{success}</Alert> : null}
       {sectionsQuery.error ? <Alert severity="warning">{getErrorMessage(sectionsQuery.error)}</Alert> : null}
@@ -184,7 +186,7 @@ export function RegisterPage() {
       <Button type="submit" variant="contained" disabled={isSubmitting}>
         Creer mon compte
       </Button>
-      <Button component={RouterLink} to="/auth/login" variant="text">
+      <Button component={RouterLink} to="/auth/login" variant="text" fullWidth>
         J'ai deja un compte
       </Button>
     </Stack>
@@ -328,6 +330,7 @@ export function PendingApprovalPage() {
         variant="contained"
         onClick={() => updateProfileMutation.mutate()}
         disabled={updateProfileMutation.isPending}
+        fullWidth
       >
         Enregistrer mon profil
       </Button>
@@ -345,6 +348,7 @@ export function PendingApprovalPage() {
           await signOutUser();
           navigate("/auth/login", { replace: true });
         }}
+        fullWidth
       >
         Se deconnecter
       </Button>

@@ -92,6 +92,8 @@ export type Candidate = {
   displayName: string;
   sectionName: string;
   bio?: string;
+  projectSummary?: string;
+  videoUrl?: string;
   photoUrl?: string;
   status: "proposed" | "validated" | "rejected";
   displayOrder?: number;

@@ -24,7 +24,11 @@ export const auth = getAuth(app);
 export const db = getFirestore(app);
 export const functions = getFunctions(app);
 
-const shouldUseEmulators = import.meta.env.VITE_USE_EMULATORS === "true";
+const requestedEmulators = import.meta.env.VITE_USE_EMULATORS === "true";
+const isLocalhostHost =
+  typeof window !== "undefined" &&
+  ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+const shouldUseEmulators = requestedEmulators && isLocalhostHost;
 
 if (typeof window !== "undefined" && shouldUseEmulators) {
   const marker = "__MODEL_EMULATORS_CONNECTED__";

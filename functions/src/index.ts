@@ -84,6 +84,15 @@ function optionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function optionalHttpUrl(value: unknown, field: string): string {
+  const parsed = optionalString(value) ?? "";
+  if (!parsed) return "";
+  if (!/^https?:\/\/.+/i.test(parsed)) {
+    throw new HttpsError("invalid-argument", `Invalid ${field}.`);
+  }
+  return parsed;
+}
+
 function requireEnum<T extends string>(value: unknown, field: string, allowed: T[]): T {
   if (typeof value !== "string" || !allowed.includes(value as T)) {
     throw new HttpsError("invalid-argument", `Invalid ${field}.`);
@@ -140,6 +149,17 @@ async function ensureSectionExists(sectionId: string): Promise<void> {
 
 function createTempPassword(): string {
   return `${randomUUID()}!Aa1`;
+}
+
+function requirePassword(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new HttpsError("invalid-argument", `Invalid ${field}.`);
+  }
+  const password = value;
+  if (password.length < 8 || password.length > 128) {
+    throw new HttpsError("invalid-argument", `Invalid ${field}.`);
+  }
+  return password;
 }
 
 function isProfileCompleted(member: {
@@ -327,10 +347,12 @@ export const bootstrapRole = onCall(async (request) => {
   const cfg = getRuntimeConfig();
   const locked = cfg.bootstrap?.locked === "true";
   const rawAllowed = cfg.auth?.superadmin_emails ?? "";
-  const allowedEmails = rawAllowed
+  const configuredAllowedEmails = rawAllowed
     .split(",")
     .map((v) => v.trim().toLowerCase())
     .filter(Boolean);
+  const allowedEmails =
+    configuredAllowedEmails.length > 0 ? configuredAllowedEmails : ["emrysdiallo@gmail.com"];
 
   if (locked) throw new HttpsError("permission-denied", "Bootstrap is locked.");
   if (!allowedEmails.includes(email.toLowerCase())) {
@@ -395,38 +417,51 @@ export const changeRole = onCall(async (request) => {
   requireAuth(actorUid);
 
   const actorRole = await getRequesterRole(actorUid);
-  requireAnyRole(actorRole, ["superadmin"]);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+  const effectiveActorRole = actorRole as Role;
 
   const memberId = requireString(request.data?.memberId, "memberId");
-  const newRole = requireEnum<Role>(request.data?.newRole, "newRole", ["member", "admin", "superadmin"]);
+  const requestedRole = requireEnum<Role>(request.data?.newRole, "newRole", ["member", "admin", "superadmin"]);
 
   if (memberId === actorUid) {
     throw new HttpsError("failed-precondition", "ERROR_CANNOT_CHANGE_OWN_ROLE");
   }
 
+  const allowedTargetRoles: Role[] =
+    effectiveActorRole === "superadmin" ? ["member", "admin", "superadmin"] : ["member", "admin"];
+  if (!allowedTargetRoles.includes(requestedRole)) {
+    throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED_ROLE_CHANGE");
+  }
+
   const memberRef = db.collection("members").doc(memberId);
+  let appliedRole: Role = requestedRole;
 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(memberRef);
     if (!snap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
 
     const previousRole = (snap.data()?.role as Role | undefined) ?? "member";
+    if (effectiveActorRole === "admin" && previousRole === "superadmin") {
+      throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED_ROLE_CHANGE");
+    }
+
+    appliedRole = requestedRole;
     tx.update(memberRef, {
-      role: newRole,
+      role: appliedRole,
       updatedAt: FieldValue.serverTimestamp(),
     });
     writeAuditTx(tx, {
       action: "member.role_change",
       actorId: actorUid,
-      actorRole: "superadmin",
+      actorRole: effectiveActorRole,
       targetType: "member",
       targetId: memberId,
-      details: { previousRole, newRole },
+      details: { previousRole, newRole: appliedRole },
     });
   });
 
-  await auth.setCustomUserClaims(memberId, { role: newRole });
-  return ok({ memberId, role: newRole });
+  await auth.setCustomUserClaims(memberId, { role: appliedRole });
+  return ok({ memberId, role: appliedRole });
 });
 
 export const createSection = onCall(async (request) => {
@@ -554,6 +589,7 @@ export const createMember = onCall(async (request) => {
   const city = optionalString(request.data?.city) ?? "";
   const sectionId = requireString(request.data?.sectionId, "sectionId");
   const phone = optionalString(request.data?.phone) ?? "";
+  const providedPassword = request.data?.password !== undefined ? requirePassword(request.data?.password, "password") : null;
   const status = requireEnum<MemberStatus>(request.data?.status ?? "pending", "status", [
     "pending",
     "active",
@@ -562,12 +598,12 @@ export const createMember = onCall(async (request) => {
 
   await ensureSectionExists(sectionId);
 
-  const temporaryPassword = createTempPassword();
+  const initialPassword = providedPassword ?? createTempPassword();
   let createdUid = "";
   try {
     const user = await auth.createUser({
       email,
-      password: temporaryPassword,
+      password: initialPassword,
       emailVerified: false,
       displayName: `${firstName} ${lastName}`,
       disabled: false,
@@ -613,7 +649,11 @@ export const createMember = onCall(async (request) => {
     });
 
     await auth.setCustomUserClaims(user.uid, { role: "member" });
-    return ok({ memberId: user.uid, temporaryPassword });
+    return ok({
+      memberId: user.uid,
+      temporaryPassword: providedPassword ? null : initialPassword,
+      passwordDefinedByAdmin: Boolean(providedPassword),
+    });
   } catch (error) {
     if (createdUid) {
       try {
@@ -631,6 +671,26 @@ export const createMember = onCall(async (request) => {
     logger.error("createMember failed", error);
     throw new HttpsError("internal", "createMember failed");
   }
+});
+
+export const setMyPassword = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  const newPassword = requirePassword(request.data?.newPassword, "newPassword");
+
+  await auth.updateUser(actorUid, { password: newPassword });
+
+  await writeAudit({
+    action: "member.password_change",
+    actorId: actorUid,
+    actorRole: actorRole ?? "member",
+    targetType: "member",
+    targetId: actorUid,
+    details: { selfService: true },
+  });
+
+  return ok({ memberId: actorUid });
 });
 
 export const updateMember = onCall(async (request) => {
@@ -955,6 +1015,87 @@ export const updateCondition = onCall(async (request) => {
   return ok({ conditionId });
 });
 
+export const deleteCondition = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const conditionId = requireString(request.data?.conditionId, "conditionId");
+  const conditionRef = db.collection("conditions").doc(conditionId);
+  const conditionSnap = await conditionRef.get();
+  if (!conditionSnap.exists) throw new HttpsError("not-found", "ERROR_CONDITION_NOT_FOUND");
+
+  const electionsWithVoterCondition = await db
+    .collection("elections")
+    .where("voterConditionIds", "array-contains", conditionId)
+    .get();
+  const electionsWithCandidateCondition = await db
+    .collection("elections")
+    .where("candidateConditionIds", "array-contains", conditionId)
+    .get();
+  const memberConditionsSnap = await db.collection("memberConditions").where("conditionId", "==", conditionId).get();
+
+  const electionOps = new Map<
+    string,
+    {
+      ref: FirebaseFirestore.DocumentReference;
+      removeVoterCondition: boolean;
+      removeCandidateCondition: boolean;
+    }
+  >();
+  electionsWithVoterCondition.docs.forEach((doc) => {
+    electionOps.set(doc.id, {
+      ref: doc.ref,
+      removeVoterCondition: true,
+      removeCandidateCondition: false,
+    });
+  });
+  electionsWithCandidateCondition.docs.forEach((doc) => {
+    const previous = electionOps.get(doc.id);
+    electionOps.set(doc.id, {
+      ref: doc.ref,
+      removeVoterCondition: previous?.removeVoterCondition ?? false,
+      removeCandidateCondition: true,
+    });
+  });
+
+  const writer = db.bulkWriter();
+  electionOps.forEach((op) => {
+    const updates: Record<string, unknown> = {
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (op.removeVoterCondition) {
+      updates.voterConditionIds = FieldValue.arrayRemove(conditionId);
+    }
+    if (op.removeCandidateCondition) {
+      updates.candidateConditionIds = FieldValue.arrayRemove(conditionId);
+    }
+    writer.update(op.ref, updates);
+  });
+  memberConditionsSnap.docs.forEach((doc) => writer.delete(doc.ref));
+  writer.delete(conditionRef);
+  await writer.close();
+
+  await writeAudit({
+    action: "condition.delete",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "condition",
+    targetId: conditionId,
+    details: {
+      removedFromElections: electionOps.size,
+      removedMemberValidations: memberConditionsSnap.size,
+    },
+  });
+
+  return ok({
+    conditionId,
+    removedFromElections: electionOps.size,
+    removedMemberValidations: memberConditionsSnap.size,
+  });
+});
+
 export const validateCondition = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
@@ -1245,7 +1386,9 @@ export const addCandidate = onCall(async (request) => {
   const electionId = requireString(request.data?.electionId, "electionId");
   const memberId = requireString(request.data?.memberId, "memberId");
   const bio = optionalString(request.data?.bio) ?? "";
-  const photoUrl = optionalString(request.data?.photoUrl) ?? "";
+  const projectSummary = optionalString(request.data?.projectSummary) ?? "";
+  const videoUrl = optionalHttpUrl(request.data?.videoUrl, "videoUrl");
+  const photoUrl = optionalHttpUrl(request.data?.photoUrl, "photoUrl");
 
   const electionRef = db.collection("elections").doc(electionId);
   const electionSnap = await electionRef.get();
@@ -1298,6 +1441,8 @@ export const addCandidate = onCall(async (request) => {
     displayName: `${member.firstName ?? ""} ${member.lastName ?? ""}`.trim(),
     sectionName,
     bio,
+    projectSummary,
+    videoUrl,
     photoUrl,
     status: "proposed",
     displayOrder: 9999,
@@ -1316,6 +1461,117 @@ export const addCandidate = onCall(async (request) => {
   });
 
   return ok({ electionId, candidateId: candidateRef.id });
+});
+
+export const getMyCandidateSpaces = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+
+  const groupSnap = await db.collectionGroup("candidates").where("memberId", "==", actorUid).get();
+  const candidacies: Array<{
+    electionId: string;
+    electionTitle: string;
+    electionStatus: string;
+    candidateId: string;
+    displayName: string;
+    sectionName: string;
+    status: string;
+    bio: string;
+    projectSummary: string;
+    videoUrl: string;
+    photoUrl: string;
+  }> = [];
+
+  for (const doc of groupSnap.docs) {
+    const electionId = doc.ref.parent.parent?.id;
+    if (!electionId) continue;
+    const electionSnap = await db.collection("elections").doc(electionId).get();
+    if (!electionSnap.exists) continue;
+    const election = electionSnap.data() as { title?: string; status?: string };
+    const candidate = doc.data() as {
+      displayName?: string;
+      sectionName?: string;
+      status?: string;
+      bio?: string;
+      projectSummary?: string;
+      videoUrl?: string;
+      photoUrl?: string;
+    };
+
+    candidacies.push({
+      electionId,
+      electionTitle: String(election.title ?? electionId),
+      electionStatus: String(election.status ?? "draft"),
+      candidateId: doc.id,
+      displayName: String(candidate.displayName ?? ""),
+      sectionName: String(candidate.sectionName ?? ""),
+      status: String(candidate.status ?? "proposed"),
+      bio: String(candidate.bio ?? ""),
+      projectSummary: String(candidate.projectSummary ?? ""),
+      videoUrl: String(candidate.videoUrl ?? ""),
+      photoUrl: String(candidate.photoUrl ?? ""),
+    });
+  }
+
+  candidacies.sort((a, b) => a.electionTitle.localeCompare(b.electionTitle, "fr"));
+  return ok({ candidacies });
+});
+
+export const updateCandidatePresentation = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const candidateId = requireString(request.data?.candidateId, "candidateId");
+  const bio = optionalString(request.data?.bio) ?? "";
+  const projectSummary = optionalString(request.data?.projectSummary) ?? "";
+  const videoUrl = optionalHttpUrl(request.data?.videoUrl, "videoUrl");
+  const photoUrl = optionalHttpUrl(request.data?.photoUrl, "photoUrl");
+
+  const electionRef = db.collection("elections").doc(electionId);
+  const electionSnap = await electionRef.get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const election = electionSnap.data() as { status?: string };
+  const electionStatus = String(election.status ?? "draft");
+  if (!["draft", "open"].includes(electionStatus)) {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
+  }
+
+  const candidateRef = db.collection(`elections/${electionId}/candidates`).doc(candidateId);
+  const candidateSnap = await candidateRef.get();
+  if (!candidateSnap.exists) throw new HttpsError("not-found", "ERROR_CANDIDATE_NOT_FOUND");
+  const candidate = candidateSnap.data() as { memberId?: string };
+
+  const isOwner = String(candidate.memberId ?? "") === actorUid;
+  const isAdmin = actorRole === "admin" || actorRole === "superadmin";
+  if (!isOwner && !isAdmin) {
+    throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED");
+  }
+
+  await candidateRef.update({
+    bio,
+    projectSummary,
+    videoUrl,
+    photoUrl,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  await writeAudit({
+    action: "candidate.presentation.update",
+    actorId: actorUid,
+    actorRole: actorRole ?? "member",
+    targetType: "candidate",
+    targetId: candidateId,
+    details: {
+      electionId,
+      updatedByCandidate: isOwner,
+      hasVideo: Boolean(videoUrl),
+      hasPhoto: Boolean(photoUrl),
+    },
+  });
+
+  return ok({ electionId, candidateId });
 });
 
 export const validateCandidate = onCall(async (request) => {

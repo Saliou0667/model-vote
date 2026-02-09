@@ -1,9 +1,11 @@
 import {
   Alert,
+  Avatar,
   Box,
   Button,
   Card,
   CardContent,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -17,13 +19,17 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TextField,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { callFunction, getErrorMessage } from "../api/callables";
 import {
   fetchActiveContributionPolicy,
@@ -56,6 +62,20 @@ const queryKeys = {
   memberElections: ["memberElections"] as const,
 };
 
+function memberStatusChipColor(status: Member["status"]): "warning" | "success" | "error" {
+  if (status === "active") return "success";
+  if (status === "suspended") return "error";
+  return "warning";
+}
+
+function electionStatusChipColor(status: Election["status"]): "warning" | "success" | "error" | "info" | "default" {
+  if (status === "open") return "success";
+  if (status === "closed") return "warning";
+  if (status === "published") return "info";
+  if (status === "archived") return "default";
+  return "default";
+}
+
 function PlaceholderPage({ title, subtitle, actionLabel, loading = false }: PlaceholderPageProps) {
   return (
     <Card>
@@ -81,6 +101,27 @@ function PlaceholderPage({ title, subtitle, actionLabel, loading = false }: Plac
   );
 }
 
+function ResponsiveTable({
+  children,
+  minWidth = 680,
+}: {
+  children: ReactNode;
+  minWidth?: number;
+}) {
+  return (
+    <TableContainer
+      sx={{
+        width: "100%",
+        overflowX: "auto",
+        WebkitOverflowScrolling: "touch",
+        "& table": { minWidth },
+      }}
+    >
+      {children}
+    </TableContainer>
+  );
+}
+
 export function MemberDashboardPage() {
   return (
     <Stack spacing={2}>
@@ -103,6 +144,10 @@ export function MemberProfilePage() {
   const [sectionId, setSectionId] = useState<string | undefined>(undefined);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [passwordFeedback, setPasswordFeedback] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const sectionsQuery = useQuery({ queryKey: queryKeys.sections, queryFn: fetchSections });
   const firstNameValue = firstName ?? profile?.firstName ?? "";
   const lastNameValue = lastName ?? profile?.lastName ?? "";
@@ -142,6 +187,25 @@ export function MemberProfilePage() {
     },
   });
 
+  const passwordMutation = useMutation({
+    mutationFn: async () => {
+      if (!user) throw new Error("Utilisateur non connecte.");
+      if (newPassword.length < 8) throw new Error("Le mot de passe doit contenir au moins 8 caracteres.");
+      if (newPassword !== confirmPassword) throw new Error("La confirmation du mot de passe ne correspond pas.");
+      await callFunction("setMyPassword", { newPassword });
+    },
+    onSuccess: () => {
+      setPasswordError(null);
+      setPasswordFeedback("Mot de passe mis a jour.");
+      setNewPassword("");
+      setConfirmPassword("");
+    },
+    onError: (mutationError) => {
+      setPasswordFeedback(null);
+      setPasswordError(getErrorMessage(mutationError));
+    },
+  });
+
   return (
     <Stack spacing={2}>
       <Typography variant="h4">Mon profil</Typography>
@@ -175,6 +239,231 @@ export function MemberProfilePage() {
             <Button variant="contained" onClick={() => mutation.mutate()} disabled={mutation.isPending || !user}>
               Mettre a jour
             </Button>
+          </Stack>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            <Typography variant="h6">Changer mon mot de passe</Typography>
+            {passwordFeedback ? <Alert severity="success">{passwordFeedback}</Alert> : null}
+            {passwordError ? <Alert severity="error">{passwordError}</Alert> : null}
+            <TextField
+              label="Nouveau mot de passe"
+              type="password"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+              fullWidth
+            />
+            <TextField
+              label="Confirmer le mot de passe"
+              type="password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              fullWidth
+            />
+            <Box>
+              <Button
+                variant="contained"
+                onClick={() => passwordMutation.mutate()}
+                disabled={!user || passwordMutation.isPending || !newPassword || !confirmPassword}
+              >
+                Enregistrer le nouveau mot de passe
+              </Button>
+            </Box>
+          </Stack>
+        </CardContent>
+      </Card>
+    </Stack>
+  );
+}
+
+export function MemberCandidateSpacePage() {
+  const queryClient = useQueryClient();
+  const [selectedCandidateKey, setSelectedCandidateKey] = useState("");
+  const [bio, setBio] = useState<string | undefined>(undefined);
+  const [projectSummary, setProjectSummary] = useState<string | undefined>(undefined);
+  const [videoUrl, setVideoUrl] = useState<string | undefined>(undefined);
+  const [photoUrl, setPhotoUrl] = useState<string | undefined>(undefined);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const candidaciesQuery = useQuery({
+    queryKey: ["myCandidateSpaces"],
+    queryFn: () =>
+      callFunction<Record<string, never>, {
+        candidacies: Array<{
+          electionId: string;
+          electionTitle: string;
+          electionStatus: string;
+          candidateId: string;
+          displayName: string;
+          sectionName: string;
+          status: string;
+          bio: string;
+          projectSummary: string;
+          videoUrl: string;
+          photoUrl: string;
+        }>;
+      }>("getMyCandidateSpaces", {}),
+  });
+
+  const candidacies = candidaciesQuery.data?.candidacies ?? [];
+  const activeKey = selectedCandidateKey || (candidacies[0] ? `${candidacies[0].electionId}:${candidacies[0].candidateId}` : "");
+  const activeCandidacy = candidacies.find((entry) => `${entry.electionId}:${entry.candidateId}` === activeKey) ?? null;
+  const canEdit = Boolean(activeCandidacy && ["draft", "open"].includes(activeCandidacy.electionStatus));
+
+  const updatePresentationMutation = useMutation({
+    mutationFn: async () => {
+      if (!activeCandidacy) throw new Error("Candidature introuvable");
+      await callFunction("updateCandidatePresentation", {
+        electionId: activeCandidacy.electionId,
+        candidateId: activeCandidacy.candidateId,
+        bio: (bio ?? activeCandidacy.bio ?? "").trim(),
+        projectSummary: (projectSummary ?? activeCandidacy.projectSummary ?? "").trim(),
+        videoUrl: (videoUrl ?? activeCandidacy.videoUrl ?? "").trim(),
+        photoUrl: (photoUrl ?? activeCandidacy.photoUrl ?? "").trim(),
+      });
+    },
+    onSuccess: async () => {
+      setError(null);
+      setMessage("Presentation du candidat enregistree.");
+      setBio(undefined);
+      setProjectSummary(undefined);
+      setVideoUrl(undefined);
+      setPhotoUrl(undefined);
+      await queryClient.invalidateQueries({ queryKey: ["myCandidateSpaces"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.memberElections });
+    },
+    onError: (mutationError) => {
+      setMessage(null);
+      setError(getErrorMessage(mutationError));
+    },
+  });
+
+  const bioValue = bio ?? activeCandidacy?.bio ?? "";
+  const projectSummaryValue = projectSummary ?? activeCandidacy?.projectSummary ?? "";
+  const videoUrlValue = videoUrl ?? activeCandidacy?.videoUrl ?? "";
+  const photoUrlValue = photoUrl ?? activeCandidacy?.photoUrl ?? "";
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="h4">Mon espace candidat</Typography>
+      <Typography color="text.secondary">
+        Ajoutez votre projet et votre video pour aider les membres a faire un choix eclaire avant le vote.
+      </Typography>
+      {message ? <Alert severity="success">{message}</Alert> : null}
+      {error ? <Alert severity="error">{error}</Alert> : null}
+      {candidaciesQuery.error ? <Alert severity="error">{getErrorMessage(candidaciesQuery.error)}</Alert> : null}
+
+      <Card>
+        <CardContent>
+          <Stack spacing={2}>
+            {candidaciesQuery.isLoading ? <Skeleton height={120} /> : null}
+            {candidacies.length === 0 && !candidaciesQuery.isLoading ? (
+              <Alert severity="info">Aucune candidature trouvee pour votre compte.</Alert>
+            ) : null}
+
+            {candidacies.length > 0 ? (
+              <FormControl fullWidth>
+                <InputLabel id="candidate-space-selector">Candidature</InputLabel>
+                <Select
+                  labelId="candidate-space-selector"
+                  label="Candidature"
+                  value={activeKey}
+                  onChange={(event) => {
+                    setSelectedCandidateKey(event.target.value);
+                    setBio(undefined);
+                    setProjectSummary(undefined);
+                    setVideoUrl(undefined);
+                    setPhotoUrl(undefined);
+                    setMessage(null);
+                    setError(null);
+                  }}
+                >
+                  {candidacies.map((entry) => {
+                    const key = `${entry.electionId}:${entry.candidateId}`;
+                    return (
+                      <MenuItem key={key} value={key}>
+                        {`${entry.electionTitle} - ${entry.displayName} (${entry.status})`}
+                      </MenuItem>
+                    );
+                  })}
+                </Select>
+              </FormControl>
+            ) : null}
+
+            {activeCandidacy ? (
+              <>
+                <Alert severity={canEdit ? "info" : "warning"}>
+                  {canEdit
+                    ? `Election ${activeCandidacy.electionStatus}: vous pouvez modifier votre presentation.`
+                    : `Election ${activeCandidacy.electionStatus}: edition verrouillee.`}
+                </Alert>
+                <TextField
+                  label="Presentation"
+                  value={bioValue}
+                  onChange={(event) => setBio(event.target.value)}
+                  fullWidth
+                  multiline
+                  minRows={3}
+                  disabled={!canEdit}
+                />
+                <TextField
+                  label="Projet"
+                  value={projectSummaryValue}
+                  onChange={(event) => setProjectSummary(event.target.value)}
+                  fullWidth
+                  multiline
+                  minRows={5}
+                  disabled={!canEdit}
+                />
+                <TextField
+                  label="Video de presentation (URL)"
+                  value={videoUrlValue}
+                  onChange={(event) => setVideoUrl(event.target.value)}
+                  placeholder="https://..."
+                  fullWidth
+                  disabled={!canEdit}
+                />
+                <TextField
+                  label="Photo du candidat (URL)"
+                  value={photoUrlValue}
+                  onChange={(event) => setPhotoUrl(event.target.value)}
+                  placeholder="https://..."
+                  fullWidth
+                  disabled={!canEdit}
+                />
+                {photoUrlValue ? (
+                  <Stack direction="row" spacing={2} alignItems="center">
+                    <Avatar
+                      src={photoUrlValue}
+                      alt={activeCandidacy.displayName}
+                      sx={{ width: 88, height: 88, bgcolor: "primary.light" }}
+                    >
+                      {activeCandidacy.displayName.slice(0, 1).toUpperCase()}
+                    </Avatar>
+                    <Button variant="outlined" href={photoUrlValue} target="_blank" rel="noreferrer">
+                      Ouvrir la photo
+                    </Button>
+                  </Stack>
+                ) : null}
+                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+                  <Button
+                    variant="contained"
+                    onClick={() => updatePresentationMutation.mutate()}
+                    disabled={!canEdit || updatePresentationMutation.isPending}
+                  >
+                    Enregistrer ma presentation
+                  </Button>
+                  {videoUrlValue ? (
+                    <Button variant="outlined" href={videoUrlValue} target="_blank" rel="noreferrer">
+                      Ouvrir la video
+                    </Button>
+                  ) : null}
+                </Stack>
+              </>
+            ) : null}
           </Stack>
         </CardContent>
       </Card>
@@ -344,6 +633,7 @@ export function MemberVotePage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [selectedElectionId, setSelectedElectionId] = useState("");
+  const [voteFlowStarted, setVoteFlowStarted] = useState(false);
   const [candidateToConfirm, setCandidateToConfirm] = useState<Candidate | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -358,6 +648,10 @@ export function MemberVotePage() {
   );
   const activeElectionId = selectedElectionId || openElections[0]?.id || "";
   const activeElection = openElections.find((election) => election.id === activeElectionId) ?? null;
+  useEffect(() => {
+    setVoteFlowStarted(false);
+    setCandidateToConfirm(null);
+  }, [activeElectionId]);
 
   const candidatesQuery = useQuery({
     queryKey: ["candidates", activeElectionId],
@@ -418,7 +712,9 @@ export function MemberVotePage() {
                     labelId="member-election"
                     label="Election"
                     value={activeElectionId}
-                    onChange={(event) => setSelectedElectionId(event.target.value)}
+                    onChange={(event) => {
+                      setSelectedElectionId(event.target.value);
+                    }}
                   >
                     {openElections.map((election) => (
                       <MenuItem key={election.id} value={election.id}>
@@ -435,6 +731,13 @@ export function MemberVotePage() {
                 {eligibilityQuery.data && !eligibilityQuery.data.eligible ? (
                   <Alert severity="warning">{"Vous n'etes pas eligible pour cette election."}</Alert>
                 ) : null}
+                {eligibilityQuery.data?.eligible ? (
+                  <Box>
+                    <Button variant="contained" onClick={() => setVoteFlowStarted(true)}>
+                      Afficher les candidats
+                    </Button>
+                  </Box>
+                ) : null}
               </>
             )}
           </Stack>
@@ -446,27 +749,65 @@ export function MemberVotePage() {
           <Typography variant="h6" mb={2}>
             Candidats
           </Typography>
+          {!voteFlowStarted ? (
+            <Alert severity="info">
+              Selectionnez l'election puis appuyez sur "Afficher les candidats" pour commencer le vote.
+            </Alert>
+          ) : null}
           {candidatesQuery.isLoading ? <Skeleton height={120} /> : null}
-          {(candidatesQuery.data?.length ?? 0) === 0 ? (
+          {voteFlowStarted && (candidatesQuery.data?.length ?? 0) === 0 ? (
             <Alert severity="info">Aucun candidat valide disponible.</Alert>
           ) : null}
           <Stack spacing={2}>
-            {candidatesQuery.data
+            {voteFlowStarted
+              ? candidatesQuery.data
               ?.filter((candidate) => candidate.status === "validated")
               .map((candidate) => (
                 <Card key={candidate.id} variant="outlined">
                   <CardContent>
                     <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
-                      <Box>
-                        <Typography variant="h6">{candidate.displayName}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                          {candidate.sectionName || "-"}
-                        </Typography>
-                        <Typography variant="body2" mt={1}>
-                          {candidate.bio || "Aucune bio"}
-                        </Typography>
+                      <Box
+                        sx={{
+                          width: { xs: "100%", md: 160 },
+                          minWidth: { md: 160 },
+                          display: "flex",
+                          justifyContent: "center",
+                          alignItems: "flex-start",
+                        }}
+                      >
+                        <Avatar
+                          src={candidate.photoUrl || undefined}
+                          alt={candidate.displayName}
+                          variant="rounded"
+                          sx={{ width: { xs: 112, md: 132 }, height: { xs: 112, md: 132 }, bgcolor: "primary.light" }}
+                        >
+                          {candidate.displayName.slice(0, 1).toUpperCase()}
+                        </Avatar>
                       </Box>
-                      <Box>
+                      <Stack spacing={1.2} sx={{ maxWidth: 760 }}>
+                        <Box>
+                          <Typography variant="h6">{candidate.displayName}</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {candidate.sectionName || "-"}
+                          </Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="subtitle2">Presentation</Typography>
+                          <Typography variant="body2">{candidate.bio || "Aucune presentation."}</Typography>
+                        </Box>
+                        <Box>
+                          <Typography variant="subtitle2">Projet</Typography>
+                          <Typography variant="body2">
+                            {candidate.projectSummary || "Aucun projet detaille pour le moment."}
+                          </Typography>
+                        </Box>
+                        {candidate.videoUrl ? (
+                          <Button variant="text" href={candidate.videoUrl} target="_blank" rel="noreferrer">
+                            Voir la video de presentation
+                          </Button>
+                        ) : null}
+                      </Stack>
+                      <Box sx={{ alignSelf: { xs: "flex-start", md: "center" } }}>
                         <Button
                           variant="contained"
                           onClick={() => setCandidateToConfirm(candidate)}
@@ -478,7 +819,8 @@ export function MemberVotePage() {
                     </Stack>
                   </CardContent>
                 </Card>
-              ))}
+              ))
+              : null}
           </Stack>
         </CardContent>
       </Card>
@@ -502,6 +844,8 @@ export function MemberVotePage() {
 }
 
 export function MemberResultsPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [selectedElectionId, setSelectedElectionId] = useState("");
   const electionsQuery = useQuery({
     queryKey: queryKeys.memberElections,
@@ -565,26 +909,44 @@ export function MemberResultsPage() {
               <Alert severity="info">
                 {`Participation: ${resultsQuery.data.election.participationRate.toFixed(2)}% (${resultsQuery.data.election.totalVotesCast} votes)`}
               </Alert>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Rang</TableCell>
-                    <TableCell>Candidat</TableCell>
-                    <TableCell>Votes</TableCell>
-                    <TableCell>%</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
+              {isMobile ? (
+                <Stack spacing={1.2}>
                   {resultsQuery.data.results.map((row) => (
-                    <TableRow key={`${row.rank}-${row.displayName}`}>
-                      <TableCell>{row.rank}</TableCell>
-                      <TableCell>{row.displayName}</TableCell>
-                      <TableCell>{row.voteCount}</TableCell>
-                      <TableCell>{row.percentage.toFixed(2)}</TableCell>
-                    </TableRow>
+                    <Card key={`${row.rank}-${row.displayName}`} variant="outlined">
+                      <CardContent sx={{ py: 1.5 }}>
+                        <Stack spacing={0.6}>
+                          <Typography variant="subtitle2">{`#${row.rank} - ${row.displayName}`}</Typography>
+                          <Typography variant="body2">{`Votes: ${row.voteCount}`}</Typography>
+                          <Typography variant="body2">{`Pourcentage: ${row.percentage.toFixed(2)}%`}</Typography>
+                        </Stack>
+                      </CardContent>
+                    </Card>
                   ))}
-                </TableBody>
-              </Table>
+                </Stack>
+              ) : (
+                <ResponsiveTable minWidth={520}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Rang</TableCell>
+                        <TableCell>Candidat</TableCell>
+                        <TableCell>Votes</TableCell>
+                        <TableCell>%</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {resultsQuery.data.results.map((row) => (
+                        <TableRow key={`${row.rank}-${row.displayName}`}>
+                          <TableCell>{row.rank}</TableCell>
+                          <TableCell>{row.displayName}</TableCell>
+                          <TableCell>{row.voteCount}</TableCell>
+                          <TableCell>{row.percentage.toFixed(2)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </ResponsiveTable>
+              )}
             </Stack>
           </CardContent>
         </Card>
@@ -595,6 +957,7 @@ export function MemberResultsPage() {
 }
 
 export function AdminDashboardPage() {
+  const { role } = useAuth();
   const sectionsQuery = useQuery({
     queryKey: queryKeys.sections,
     queryFn: fetchSections,
@@ -603,6 +966,11 @@ export function AdminDashboardPage() {
     queryKey: queryKeys.members,
     queryFn: fetchMembers,
   });
+  const visibleMembersCount = useMemo(() => {
+    const members = membersQuery.data ?? [];
+    if (role === "superadmin") return members.length;
+    return members.filter((member) => member.role !== "superadmin").length;
+  }, [membersQuery.data, role]);
 
   return (
     <Stack spacing={2}>
@@ -621,7 +989,7 @@ export function AdminDashboardPage() {
             <Typography variant="body2" color="text.secondary">
               Membres
             </Typography>
-            <Typography variant="h4">{membersQuery.isLoading ? "..." : (membersQuery.data?.length ?? 0)}</Typography>
+            <Typography variant="h4">{membersQuery.isLoading ? "..." : visibleMembersCount}</Typography>
           </CardContent>
         </Card>
       </Stack>
@@ -630,6 +998,8 @@ export function AdminDashboardPage() {
 }
 
 export function AdminSectionsPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
   const { role } = useAuth();
   const [name, setName] = useState("");
@@ -731,52 +1101,94 @@ export function AdminSectionsPage() {
             <Alert severity="info">Aucune section disponible.</Alert>
           ) : null}
           {sectionsQuery.data && sectionsQuery.data.length > 0 ? (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Nom</TableCell>
-                  <TableCell>Ville</TableCell>
-                  <TableCell>Region</TableCell>
-                  <TableCell>Membres</TableCell>
-                  <TableCell align="right">Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
+            isMobile ? (
+              <Stack spacing={1.3}>
                 {sectionsQuery.data.map((section) => (
-                  <TableRow key={section.id}>
-                    <TableCell>{section.name}</TableCell>
-                    <TableCell>{section.city}</TableCell>
-                    <TableCell>{section.region || "-"}</TableCell>
-                    <TableCell>{section.memberCount ?? 0}</TableCell>
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={1} justifyContent="flex-end">
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => {
-                            setEditing(section);
-                            setEditName(section.name);
-                            setEditCity(section.city);
-                            setEditRegion(section.region ?? "");
-                          }}
-                        >
-                          Modifier
-                        </Button>
-                        <Button
-                          size="small"
-                          color="error"
-                          variant="outlined"
-                          onClick={() => deleteMutation.mutate(section.id)}
-                          disabled={role !== "superadmin" || deleteMutation.isPending}
-                        >
-                          Supprimer
-                        </Button>
+                  <Card key={section.id} variant="outlined">
+                    <CardContent>
+                      <Stack spacing={0.8}>
+                        <Typography variant="subtitle2">{section.name}</Typography>
+                        <Typography variant="body2">{`Ville: ${section.city}`}</Typography>
+                        <Typography variant="body2">{`Region: ${section.region || "-"}`}</Typography>
+                        <Typography variant="body2">{`Membres: ${section.memberCount ?? 0}`}</Typography>
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => {
+                              setEditing(section);
+                              setEditName(section.name);
+                              setEditCity(section.city);
+                              setEditRegion(section.region ?? "");
+                            }}
+                          >
+                            Modifier
+                          </Button>
+                          <Button
+                            size="small"
+                            color="error"
+                            variant="outlined"
+                            onClick={() => deleteMutation.mutate(section.id)}
+                            disabled={role !== "superadmin" || deleteMutation.isPending}
+                          >
+                            Supprimer
+                          </Button>
+                        </Stack>
                       </Stack>
-                    </TableCell>
-                  </TableRow>
+                    </CardContent>
+                  </Card>
                 ))}
-              </TableBody>
-            </Table>
+              </Stack>
+            ) : (
+              <ResponsiveTable minWidth={720}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Nom</TableCell>
+                      <TableCell>Ville</TableCell>
+                      <TableCell>Region</TableCell>
+                      <TableCell>Membres</TableCell>
+                      <TableCell align="right">Actions</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {sectionsQuery.data.map((section) => (
+                      <TableRow key={section.id}>
+                        <TableCell>{section.name}</TableCell>
+                        <TableCell>{section.city}</TableCell>
+                        <TableCell>{section.region || "-"}</TableCell>
+                        <TableCell>{section.memberCount ?? 0}</TableCell>
+                        <TableCell align="right">
+                          <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() => {
+                                setEditing(section);
+                                setEditName(section.name);
+                                setEditCity(section.city);
+                                setEditRegion(section.region ?? "");
+                              }}
+                            >
+                              Modifier
+                            </Button>
+                            <Button
+                              size="small"
+                              color="error"
+                              variant="outlined"
+                              onClick={() => deleteMutation.mutate(section.id)}
+                              disabled={role !== "superadmin" || deleteMutation.isPending}
+                            >
+                              Supprimer
+                            </Button>
+                          </Stack>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ResponsiveTable>
+            )
           ) : null}
         </CardContent>
       </Card>
@@ -806,6 +1218,8 @@ export function AdminSectionsPage() {
 }
 
 export function AdminMembersPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
   const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
   const sectionsQuery = useQuery({ queryKey: queryKeys.sections, queryFn: fetchSections });
@@ -819,6 +1233,7 @@ export function AdminMembersPage() {
   const [lastName, setLastName] = useState("");
   const [city, setCity] = useState("");
   const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
   const [sectionId, setSectionId] = useState("");
   const [status, setStatus] = useState<Member["status"]>("pending");
   const [editingMember, setEditingMember] = useState<Member | null>(null);
@@ -831,6 +1246,7 @@ export function AdminMembersPage() {
         lastName,
         city,
         phone,
+        password,
         sectionId,
         status,
       }),
@@ -841,6 +1257,7 @@ export function AdminMembersPage() {
       setLastName("");
       setCity("");
       setPhone("");
+      setPassword("");
       setStatus("pending");
       await queryClient.invalidateQueries({ queryKey: queryKeys.members });
       await queryClient.invalidateQueries({ queryKey: queryKeys.sections });
@@ -891,8 +1308,13 @@ export function AdminMembersPage() {
     return map;
   }, [sectionsQuery.data]);
 
+  const membersForAdminView = useMemo(
+    () => (membersQuery.data ?? []).filter((member) => member.role !== "superadmin"),
+    [membersQuery.data],
+  );
+
   const filteredMembers = useMemo(() => {
-    const list = membersQuery.data ?? [];
+    const list = membersForAdminView;
     return list.filter((member) => {
       const text = `${member.firstName} ${member.lastName} ${member.email}`.toLowerCase();
       const matchesSearch = text.includes(search.toLowerCase());
@@ -900,11 +1322,11 @@ export function AdminMembersPage() {
       const matchesSection = sectionFilter === "all" ? true : member.sectionId === sectionFilter;
       return matchesSearch && matchesStatus && matchesSection;
     });
-  }, [membersQuery.data, search, statusFilter, sectionFilter]);
+  }, [membersForAdminView, search, statusFilter, sectionFilter]);
 
   const pendingMembers = useMemo(
-    () => (membersQuery.data ?? []).filter((member) => member.role === "member" && member.status === "pending"),
-    [membersQuery.data],
+    () => membersForAdminView.filter((member) => member.role === "member" && member.status === "pending"),
+    [membersForAdminView],
   );
 
   return (
@@ -929,6 +1351,14 @@ export function AdminMembersPage() {
             </Stack>
             <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
               <TextField label="Telephone" value={phone} onChange={(event) => setPhone(event.target.value)} fullWidth />
+              <TextField
+                label="Mot de passe initial"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                helperText="Minimum 8 caracteres"
+                fullWidth
+              />
               <FormControl fullWidth>
                 <InputLabel id="member-section">Section</InputLabel>
                 <Select
@@ -962,7 +1392,16 @@ export function AdminMembersPage() {
               <Button
                 variant="contained"
                 onClick={() => createMutation.mutate()}
-                disabled={!email || !firstName || !lastName || !city || !sectionId || createMutation.isPending}
+                disabled={
+                  !email ||
+                  !firstName ||
+                  !lastName ||
+                  !city ||
+                  !sectionId ||
+                  !password ||
+                  password.length < 8 ||
+                  createMutation.isPending
+                }
               >
                 Ajouter un membre
               </Button>
@@ -1024,25 +1463,18 @@ export function AdminMembersPage() {
           </Typography>
           {pendingMembers.length === 0 ? (
             <Alert severity="info">Aucune inscription en attente.</Alert>
-          ) : (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Nom</TableCell>
-                  <TableCell>Email</TableCell>
-                  <TableCell>Ville</TableCell>
-                  <TableCell>Section</TableCell>
-                  <TableCell align="right">Decision</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {pendingMembers.map((member) => (
-                  <TableRow key={member.id}>
-                    <TableCell>{`${member.firstName} ${member.lastName}`}</TableCell>
-                    <TableCell>{member.email}</TableCell>
-                    <TableCell>{member.city || "-"}</TableCell>
-                    <TableCell>{sectionLabel.get(member.sectionId ?? "") ?? "-"}</TableCell>
-                    <TableCell align="right">
+          ) : isMobile ? (
+            <Stack spacing={1.5}>
+              {pendingMembers.map((member) => (
+                <Card key={member.id} variant="outlined">
+                  <CardContent>
+                    <Stack spacing={0.9}>
+                      <Typography variant="subtitle2">{`${member.firstName} ${member.lastName}`}</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {member.email}
+                      </Typography>
+                      <Typography variant="body2">{`Ville: ${member.city || "-"}`}</Typography>
+                      <Typography variant="body2">{`Section: ${sectionLabel.get(member.sectionId ?? "") ?? "-"}`}</Typography>
                       <Stack direction="row" spacing={1} justifyContent="flex-end">
                         <Button
                           size="small"
@@ -1062,11 +1494,58 @@ export function AdminMembersPage() {
                           Refuser
                         </Button>
                       </Stack>
-                    </TableCell>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))}
+            </Stack>
+          ) : (
+            <ResponsiveTable minWidth={780}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Prenom</TableCell>
+                    <TableCell>Nom</TableCell>
+                    <TableCell>Email</TableCell>
+                    <TableCell>Ville</TableCell>
+                    <TableCell>Section</TableCell>
+                    <TableCell align="right">Decision</TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHead>
+                <TableBody>
+                  {pendingMembers.map((member) => (
+                    <TableRow key={member.id}>
+                      <TableCell>{member.firstName}</TableCell>
+                      <TableCell>{member.lastName}</TableCell>
+                      <TableCell>{member.email}</TableCell>
+                      <TableCell>{member.city || "-"}</TableCell>
+                      <TableCell>{sectionLabel.get(member.sectionId ?? "") ?? "-"}</TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          <Button
+                            size="small"
+                            variant="contained"
+                            onClick={() => reviewRegistrationMutation.mutate({ memberId: member.id, status: "active" })}
+                            disabled={reviewRegistrationMutation.isPending}
+                          >
+                            Accepter
+                          </Button>
+                          <Button
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            onClick={() => reviewRegistrationMutation.mutate({ memberId: member.id, status: "suspended" })}
+                            disabled={reviewRegistrationMutation.isPending}
+                          >
+                            Refuser
+                          </Button>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </ResponsiveTable>
           )}
         </CardContent>
       </Card>
@@ -1080,39 +1559,85 @@ export function AdminMembersPage() {
           {!membersQuery.isLoading && filteredMembers.length === 0 ? (
             <Alert severity="info">Aucun membre trouve.</Alert>
           ) : null}
-          {filteredMembers.length > 0 ? (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Nom</TableCell>
-                  <TableCell>Email</TableCell>
-                  <TableCell>Ville</TableCell>
-                  <TableCell>Section</TableCell>
-                  <TableCell>Cotisation</TableCell>
-                  <TableCell>Role</TableCell>
-                  <TableCell>Statut</TableCell>
-                  <TableCell align="right">Action</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {filteredMembers.map((member) => (
-                  <TableRow key={member.id}>
-                    <TableCell>{`${member.firstName} ${member.lastName}`}</TableCell>
-                    <TableCell>{member.email}</TableCell>
-                    <TableCell>{member.city || "-"}</TableCell>
-                    <TableCell>{sectionLabel.get(member.sectionId ?? "") ?? "-"}</TableCell>
-                    <TableCell>{member.contributionUpToDate ? "A jour" : "En retard"}</TableCell>
-                    <TableCell>{member.role}</TableCell>
-                    <TableCell>{member.status}</TableCell>
-                    <TableCell align="right">
-                      <Button size="small" variant="outlined" onClick={() => setEditingMember({ ...member })}>
-                        Editer
-                      </Button>
-                    </TableCell>
+          {filteredMembers.length > 0 && isMobile ? (
+            <Stack spacing={1.5}>
+              {filteredMembers.map((member) => (
+                <Card key={member.id} variant="outlined">
+                  <CardContent>
+                    <Stack spacing={0.9}>
+                      <Typography variant="subtitle2">{`${member.firstName} ${member.lastName}`}</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {member.email}
+                      </Typography>
+                      <Typography variant="body2">{`Ville: ${member.city || "-"}`}</Typography>
+                      <Typography variant="body2">{`Section: ${sectionLabel.get(member.sectionId ?? "") ?? "-"}`}</Typography>
+                      <Typography variant="body2">{`Cotisation: ${member.contributionUpToDate ? "A jour" : "En retard"}`}</Typography>
+                      <Stack direction="row" spacing={1}>
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          color={member.role === "superadmin" ? "secondary" : member.role === "admin" ? "info" : "default"}
+                          label={member.role}
+                        />
+                        <Chip size="small" color={memberStatusChipColor(member.status)} label={member.status} />
+                      </Stack>
+                      <Box display="flex" justifyContent="flex-end">
+                        <Button size="small" variant="outlined" onClick={() => setEditingMember({ ...member })}>
+                          Editer
+                        </Button>
+                      </Box>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))}
+            </Stack>
+          ) : null}
+          {filteredMembers.length > 0 && !isMobile ? (
+            <ResponsiveTable minWidth={1020}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Prenom</TableCell>
+                    <TableCell>Nom</TableCell>
+                    <TableCell>Email</TableCell>
+                    <TableCell>Ville</TableCell>
+                    <TableCell>Section</TableCell>
+                    <TableCell>Cotisation</TableCell>
+                    <TableCell>Role</TableCell>
+                    <TableCell>Statut</TableCell>
+                    <TableCell align="right">Action</TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHead>
+                <TableBody>
+                  {filteredMembers.map((member) => (
+                    <TableRow key={member.id}>
+                      <TableCell>{member.firstName}</TableCell>
+                      <TableCell>{member.lastName}</TableCell>
+                      <TableCell>{member.email}</TableCell>
+                      <TableCell>{member.city || "-"}</TableCell>
+                      <TableCell>{sectionLabel.get(member.sectionId ?? "") ?? "-"}</TableCell>
+                      <TableCell>{member.contributionUpToDate ? "A jour" : "En retard"}</TableCell>
+                      <TableCell>
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          color={member.role === "superadmin" ? "secondary" : member.role === "admin" ? "info" : "default"}
+                          label={member.role}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Chip size="small" color={memberStatusChipColor(member.status)} label={member.status} />
+                      </TableCell>
+                      <TableCell align="right">
+                        <Button size="small" variant="outlined" onClick={() => setEditingMember({ ...member })}>
+                          Editer
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </ResponsiveTable>
           ) : null}
         </CardContent>
       </Card>
@@ -1195,6 +1720,8 @@ export function AdminMembersPage() {
 }
 
 export function AdminConditionsPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const { role } = useAuth();
   const canManageConditionCatalog = role === "admin" || role === "superadmin";
   const queryClient = useQueryClient();
@@ -1209,8 +1736,6 @@ export function AdminConditionsPage() {
   const [type, setType] = useState<Condition["type"]>("checkbox");
   const [validityDuration, setValidityDuration] = useState("0");
   const [selectedMember, setSelectedMember] = useState("");
-  const [selectedCondition, setSelectedCondition] = useState("");
-  const [validationState, setValidationState] = useState<"valid" | "invalid">("valid");
   const [note, setNote] = useState("");
 
   const memberConditionsQuery = useQuery({
@@ -1251,12 +1776,27 @@ export function AdminConditionsPage() {
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (conditionId: string) =>
+      callFunction("deleteCondition", {
+        conditionId,
+      }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.conditions });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.memberElections });
+      await queryClient.invalidateQueries({ queryKey: ["memberConditions"] });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
   const validateMutation = useMutation({
-    mutationFn: () =>
+    mutationFn: ({ conditionId, validated }: { conditionId: string; validated: boolean }) =>
       callFunction("validateCondition", {
         memberId: selectedMember,
-        conditionId: selectedCondition,
-        validated: validationState === "valid",
+        conditionId,
+        validated,
         note,
       }),
     onSuccess: async () => {
@@ -1267,11 +1807,23 @@ export function AdminConditionsPage() {
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
 
-  const conditionLabel = useMemo(() => {
-    const map = new Map<string, string>();
-    conditionsQuery.data?.forEach((condition) => map.set(condition.id, condition.name));
+  const selectableMembers = useMemo(
+    () =>
+      (membersQuery.data ?? []).filter((member) => {
+        if (role === "superadmin") return true;
+        return member.role !== "superadmin";
+      }),
+    [membersQuery.data, role],
+  );
+  const activeConditions = useMemo(
+    () => (conditionsQuery.data ?? []).filter((condition) => condition.isActive),
+    [conditionsQuery.data],
+  );
+  const memberConditionByConditionId = useMemo(() => {
+    const map = new Map<string, MemberCondition>();
+    (memberConditionsQuery.data ?? []).forEach((item) => map.set(item.conditionId, item));
     return map;
-  }, [conditionsQuery.data]);
+  }, [memberConditionsQuery.data]);
 
   return (
     <Stack spacing={2}>
@@ -1333,42 +1885,106 @@ export function AdminConditionsPage() {
 
             {conditionsQuery.isLoading ? <Skeleton height={120} /> : null}
             {(conditionsQuery.data?.length ?? 0) > 0 ? (
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Nom</TableCell>
-                    <TableCell>Type</TableCell>
-                    <TableCell>Validite</TableCell>
-                    <TableCell>Active</TableCell>
-                    <TableCell align="right">Action</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
+              isMobile ? (
+                <Stack spacing={1.2}>
                   {conditionsQuery.data?.map((condition) => (
-                    <TableRow key={condition.id}>
-                      <TableCell>{condition.name}</TableCell>
-                      <TableCell>{condition.type}</TableCell>
-                      <TableCell>{condition.validityDuration ?? "illimite"}</TableCell>
-                      <TableCell>{condition.isActive ? "oui" : "non"}</TableCell>
-                      <TableCell align="right">
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          disabled={!canManageConditionCatalog || updateMutation.isPending}
-                          onClick={() =>
-                            updateMutation.mutate({
-                              conditionId: condition.id,
-                              updates: { isActive: !condition.isActive },
-                            })
-                          }
-                        >
-                          {condition.isActive ? "Desactiver" : "Activer"}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
+                    <Card key={condition.id} variant="outlined">
+                      <CardContent>
+                        <Stack spacing={0.7}>
+                          <Typography variant="subtitle2">{condition.name}</Typography>
+                          <Typography variant="body2">{`Type: ${condition.type}`}</Typography>
+                          <Typography variant="body2">{`Validite: ${condition.validityDuration ?? "illimite"}`}</Typography>
+                          <Typography variant="body2">{`Active: ${condition.isActive ? "oui" : "non"}`}</Typography>
+                          <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              disabled={!canManageConditionCatalog || updateMutation.isPending}
+                              onClick={() =>
+                                updateMutation.mutate({
+                                  conditionId: condition.id,
+                                  updates: { isActive: !condition.isActive },
+                                })
+                              }
+                            >
+                              {condition.isActive ? "Desactiver" : "Activer"}
+                            </Button>
+                            <Button
+                              size="small"
+                              color="error"
+                              variant="outlined"
+                              disabled={!canManageConditionCatalog || deleteMutation.isPending}
+                              onClick={() => {
+                                if (!window.confirm("Supprimer cette condition partout ? Cette action est irreversible.")) {
+                                  return;
+                                }
+                                deleteMutation.mutate(condition.id);
+                              }}
+                            >
+                              Supprimer
+                            </Button>
+                          </Stack>
+                        </Stack>
+                      </CardContent>
+                    </Card>
                   ))}
-                </TableBody>
-              </Table>
+                </Stack>
+              ) : (
+                <ResponsiveTable minWidth={820}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Nom</TableCell>
+                        <TableCell>Type</TableCell>
+                        <TableCell>Validite</TableCell>
+                        <TableCell>Active</TableCell>
+                        <TableCell align="right">Action</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {conditionsQuery.data?.map((condition) => (
+                        <TableRow key={condition.id}>
+                          <TableCell>{condition.name}</TableCell>
+                          <TableCell>{condition.type}</TableCell>
+                          <TableCell>{condition.validityDuration ?? "illimite"}</TableCell>
+                          <TableCell>{condition.isActive ? "oui" : "non"}</TableCell>
+                          <TableCell align="right">
+                            <Stack direction="row" spacing={1} justifyContent="flex-end">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                disabled={!canManageConditionCatalog || updateMutation.isPending}
+                                onClick={() =>
+                                  updateMutation.mutate({
+                                    conditionId: condition.id,
+                                    updates: { isActive: !condition.isActive },
+                                  })
+                                }
+                              >
+                                {condition.isActive ? "Desactiver" : "Activer"}
+                              </Button>
+                              <Button
+                                size="small"
+                                color="error"
+                                variant="outlined"
+                                disabled={!canManageConditionCatalog || deleteMutation.isPending}
+                                onClick={() => {
+                                  if (!window.confirm("Supprimer cette condition partout ? Cette action est irreversible.")) {
+                                    return;
+                                  }
+                                  deleteMutation.mutate(condition.id);
+                                }}
+                              >
+                                Supprimer
+                              </Button>
+                            </Stack>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </ResponsiveTable>
+              )
             ) : null}
           </Stack>
         </CardContent>
@@ -1387,77 +2003,115 @@ export function AdminConditionsPage() {
                   value={selectedMember}
                   onChange={(event) => setSelectedMember(event.target.value)}
                 >
-                  {membersQuery.data?.map((member) => (
+                  {selectableMembers.map((member) => (
                     <MenuItem key={member.id} value={member.id}>
                       {`${member.firstName} ${member.lastName} - ${member.email}`}
                     </MenuItem>
                   ))}
                 </Select>
               </FormControl>
-              <FormControl fullWidth>
-                <InputLabel id="cond-condition">Condition</InputLabel>
-                <Select
-                  labelId="cond-condition"
-                  label="Condition"
-                  value={selectedCondition}
-                  onChange={(event) => setSelectedCondition(event.target.value)}
-                >
-                  {conditionsQuery.data?.map((condition) => (
-                    <MenuItem key={condition.id} value={condition.id}>
-                      {condition.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-              <FormControl fullWidth>
-                <InputLabel id="cond-state">Etat</InputLabel>
-                <Select
-                  labelId="cond-state"
-                  label="Etat"
-                  value={validationState}
-                  onChange={(event) => setValidationState(event.target.value as "valid" | "invalid")}
-                >
-                  <MenuItem value="valid">Valider</MenuItem>
-                  <MenuItem value="invalid">Invalider</MenuItem>
-                </Select>
-              </FormControl>
+              <TextField
+                label="Note (optionnelle)"
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                fullWidth
+              />
             </Stack>
-            <TextField label="Note" value={note} onChange={(event) => setNote(event.target.value)} fullWidth />
-            <Box>
-              <Button
-                variant="contained"
-                onClick={() => validateMutation.mutate()}
-                disabled={validateMutation.isPending || !selectedMember || !selectedCondition}
-              >
-                Enregistrer la validation
-              </Button>
-            </Box>
-
-            {(memberConditionsQuery.data?.length ?? 0) > 0 ? (
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Condition</TableCell>
-                    <TableCell>Etat</TableCell>
-                    <TableCell>Expire le</TableCell>
-                    <TableCell>Note</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {memberConditionsQuery.data?.map((item: MemberCondition) => (
-                    <TableRow key={item.id}>
-                      <TableCell>{conditionLabel.get(item.conditionId) ?? item.conditionId}</TableCell>
-                      <TableCell>{item.validated ? "Validee" : "Invalide"}</TableCell>
-                      <TableCell>
-                        {item.expiresAt ? item.expiresAt.toDate().toLocaleDateString("fr-FR") : "-"}
-                      </TableCell>
-                      <TableCell>{item.note || "-"}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+            {!selectedMember ? (
+              <Alert severity="info">Selectionnez un membre pour afficher la checklist des conditions actives.</Alert>
+            ) : activeConditions.length === 0 ? (
+              <Alert severity="info">Aucune condition active dans le catalogue.</Alert>
+            ) : isMobile ? (
+              <Stack spacing={1.2}>
+                {activeConditions.map((condition) => {
+                  const item = memberConditionByConditionId.get(condition.id);
+                  const isValid = Boolean(item?.validated);
+                  return (
+                    <Card key={condition.id} variant="outlined">
+                      <CardContent>
+                        <Stack spacing={0.7}>
+                          <Typography variant="subtitle2">{condition.name}</Typography>
+                          <Typography variant="body2">{`Type: ${condition.type}`}</Typography>
+                          <Typography variant="body2">{`Etat: ${isValid ? "Validee" : "Non validee"}`}</Typography>
+                          <Typography variant="body2">
+                            {`Expire le: ${item?.expiresAt ? item.expiresAt.toDate().toLocaleDateString("fr-FR") : "-"}`}
+                          </Typography>
+                          <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Button
+                              size="small"
+                              variant="contained"
+                              onClick={() => validateMutation.mutate({ conditionId: condition.id, validated: true })}
+                              disabled={validateMutation.isPending}
+                            >
+                              Valider
+                            </Button>
+                            <Button
+                              size="small"
+                              color="warning"
+                              variant="outlined"
+                              onClick={() => validateMutation.mutate({ conditionId: condition.id, validated: false })}
+                              disabled={validateMutation.isPending}
+                            >
+                              Invalider
+                            </Button>
+                          </Stack>
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </Stack>
             ) : (
-              <Alert severity="info">Aucune validation pour ce membre.</Alert>
+              <ResponsiveTable minWidth={860}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Condition</TableCell>
+                      <TableCell>Type</TableCell>
+                      <TableCell>Etat</TableCell>
+                      <TableCell>Expire le</TableCell>
+                      <TableCell align="right">Actions</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {activeConditions.map((condition) => {
+                      const item = memberConditionByConditionId.get(condition.id);
+                      const isValid = Boolean(item?.validated);
+                      return (
+                        <TableRow key={condition.id}>
+                          <TableCell>{condition.name}</TableCell>
+                          <TableCell>{condition.type}</TableCell>
+                          <TableCell>{isValid ? "Validee" : "Non validee"}</TableCell>
+                          <TableCell>
+                            {item?.expiresAt ? item.expiresAt.toDate().toLocaleDateString("fr-FR") : "-"}
+                          </TableCell>
+                          <TableCell align="right">
+                            <Stack direction="row" spacing={1} justifyContent="flex-end">
+                              <Button
+                                size="small"
+                                variant="contained"
+                                onClick={() => validateMutation.mutate({ conditionId: condition.id, validated: true })}
+                                disabled={validateMutation.isPending}
+                              >
+                                Valider
+                              </Button>
+                              <Button
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                onClick={() => validateMutation.mutate({ conditionId: condition.id, validated: false })}
+                                disabled={validateMutation.isPending}
+                              >
+                                Invalider
+                              </Button>
+                            </Stack>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </ResponsiveTable>
             )}
           </Stack>
         </CardContent>
@@ -1467,6 +2121,8 @@ export function AdminConditionsPage() {
 }
 
 export function AdminContributionsPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const { role } = useAuth();
   const queryClient = useQueryClient();
   const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
@@ -1538,6 +2194,14 @@ export function AdminContributionsPage() {
     });
     return map;
   }, [membersQuery.data]);
+  const selectableMembers = useMemo(
+    () =>
+      (membersQuery.data ?? []).filter((member) => {
+        if (role === "superadmin") return true;
+        return member.role !== "superadmin";
+      }),
+    [membersQuery.data, role],
+  );
 
   const canSavePolicy =
     role === "superadmin" && policyName.length > 0 && Number(policyAmount) > 0 && Number(policyGraceDays) >= 0;
@@ -1629,7 +2293,7 @@ export function AdminContributionsPage() {
                   value={memberId}
                   onChange={(event) => setMemberId(event.target.value)}
                 >
-                  {membersQuery.data?.map((member) => (
+                  {selectableMembers.map((member) => (
                     <MenuItem key={member.id} value={member.id}>
                       {`${member.firstName} ${member.lastName} - ${member.email}`}
                     </MenuItem>
@@ -1700,28 +2364,49 @@ export function AdminContributionsPage() {
             <Alert severity="info">Aucun paiement enregistre.</Alert>
           ) : null}
           {(paymentsQuery.data?.length ?? 0) > 0 ? (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Membre</TableCell>
-                  <TableCell>Montant</TableCell>
-                  <TableCell>Periode</TableCell>
-                  <TableCell>Reference</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
+            isMobile ? (
+              <Stack spacing={1.2}>
                 {paymentsQuery.data?.map((payment: PaymentRecord) => (
-                  <TableRow key={payment.id}>
-                    <TableCell>{memberLabel.get(payment.memberId) ?? payment.memberId}</TableCell>
-                    <TableCell>{`${payment.amount} ${payment.currency}`}</TableCell>
-                    <TableCell>
-                      {`${payment.periodStart?.toDate().toLocaleDateString("fr-FR")} - ${payment.periodEnd?.toDate().toLocaleDateString("fr-FR")}`}
-                    </TableCell>
-                    <TableCell>{payment.reference || "-"}</TableCell>
-                  </TableRow>
+                  <Card key={payment.id} variant="outlined">
+                    <CardContent>
+                      <Stack spacing={0.6}>
+                        <Typography variant="subtitle2">{memberLabel.get(payment.memberId) ?? payment.memberId}</Typography>
+                        <Typography variant="body2">{`Montant: ${payment.amount} ${payment.currency}`}</Typography>
+                        <Typography variant="body2">
+                          {`Periode: ${payment.periodStart?.toDate().toLocaleDateString("fr-FR")} - ${payment.periodEnd?.toDate().toLocaleDateString("fr-FR")}`}
+                        </Typography>
+                        <Typography variant="body2">{`Reference: ${payment.reference || "-"}`}</Typography>
+                      </Stack>
+                    </CardContent>
+                  </Card>
                 ))}
-              </TableBody>
-            </Table>
+              </Stack>
+            ) : (
+              <ResponsiveTable minWidth={760}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Membre</TableCell>
+                      <TableCell>Montant</TableCell>
+                      <TableCell>Periode</TableCell>
+                      <TableCell>Reference</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {paymentsQuery.data?.map((payment: PaymentRecord) => (
+                      <TableRow key={payment.id}>
+                        <TableCell>{memberLabel.get(payment.memberId) ?? payment.memberId}</TableCell>
+                        <TableCell>{`${payment.amount} ${payment.currency}`}</TableCell>
+                        <TableCell>
+                          {`${payment.periodStart?.toDate().toLocaleDateString("fr-FR")} - ${payment.periodEnd?.toDate().toLocaleDateString("fr-FR")}`}
+                        </TableCell>
+                        <TableCell>{payment.reference || "-"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ResponsiveTable>
+            )
           ) : null}
         </CardContent>
       </Card>
@@ -1730,6 +2415,10 @@ export function AdminContributionsPage() {
 }
 
 export function AdminElectionsPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const location = useLocation();
+  const candidateMode = location.pathname.startsWith("/admin/candidates");
   const { role } = useAuth();
   const queryClient = useQueryClient();
   const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
@@ -1756,6 +2445,9 @@ export function AdminElectionsPage() {
   const [managedCandidateConditionIds, setManagedCandidateConditionIds] = useState<string[]>([]);
   const [candidateMemberId, setCandidateMemberId] = useState("");
   const [candidateBio, setCandidateBio] = useState("");
+  const [candidateProjectSummary, setCandidateProjectSummary] = useState("");
+  const [candidateVideoUrl, setCandidateVideoUrl] = useState("");
+  const [candidatePhotoUrl, setCandidatePhotoUrl] = useState("");
   const [exportContent, setExportContent] = useState("");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
 
@@ -1763,9 +2455,26 @@ export function AdminElectionsPage() {
     () => (electionsQuery.data ?? []).find((election) => election.id === selectedElectionId) ?? null,
     [electionsQuery.data, selectedElectionId],
   );
+  useEffect(() => {
+    if (!candidateMode) return;
+    if (selectedElectionId) return;
+    const first = electionsQuery.data?.[0];
+    if (!first) return;
+    setSelectedElectionId(first.id);
+    setManagedVoterConditionIds(first.voterConditionIds ?? []);
+    setManagedCandidateConditionIds(first.candidateConditionIds ?? []);
+  }, [candidateMode, electionsQuery.data, selectedElectionId]);
   const canEditSelectedElectionConditions = Boolean(
     selectedElection &&
       (role === "superadmin" || selectedElection.status === "draft" || selectedElection.status === "open"),
+  );
+  const selectableMembers = useMemo(
+    () =>
+      (membersQuery.data ?? []).filter((member) => {
+        if (role === "superadmin") return true;
+        return member.role !== "superadmin";
+      }),
+    [membersQuery.data, role],
   );
 
   const candidatesQuery = useQuery({
@@ -1805,11 +2514,17 @@ export function AdminElectionsPage() {
         electionId: selectedElectionId,
         memberId: candidateMemberId,
         bio: candidateBio,
+        projectSummary: candidateProjectSummary,
+        videoUrl: candidateVideoUrl,
+        photoUrl: candidatePhotoUrl,
       }),
     onSuccess: async () => {
       setError(null);
       setCandidateMemberId("");
       setCandidateBio("");
+      setCandidateProjectSummary("");
+      setCandidateVideoUrl("");
+      setCandidatePhotoUrl("");
       await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
@@ -1903,134 +2618,136 @@ export function AdminElectionsPage() {
 
   return (
     <Stack spacing={2}>
-      <Typography variant="h4">Elections</Typography>
+      <Typography variant="h4">{candidateMode ? "Candidats" : "Elections"}</Typography>
       {error ? <Alert severity="error">{error}</Alert> : null}
 
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h6">Creer une election</Typography>
-            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-              <TextField label="Titre" value={title} onChange={(event) => setTitle(event.target.value)} fullWidth />
-              <FormControl fullWidth>
-                <InputLabel id="election-type">Type</InputLabel>
-                <Select
-                  labelId="election-type"
-                  label="Type"
-                  value={type}
-                  onChange={(event) => setType(event.target.value as Election["type"])}
-                >
-                  <MenuItem value="federal">federal</MenuItem>
-                  <MenuItem value="section">section</MenuItem>
-                  <MenuItem value="other">other</MenuItem>
-                </Select>
-              </FormControl>
-            </Stack>
-            <TextField
-              label="Description"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              fullWidth
-            />
-            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+      {!candidateMode ? (
+        <Card>
+          <CardContent>
+            <Stack spacing={2}>
+              <Typography variant="h6">Creer une election</Typography>
+              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                <TextField label="Titre" value={title} onChange={(event) => setTitle(event.target.value)} fullWidth />
+                <FormControl fullWidth>
+                  <InputLabel id="election-type">Type</InputLabel>
+                  <Select
+                    labelId="election-type"
+                    label="Type"
+                    value={type}
+                    onChange={(event) => setType(event.target.value as Election["type"])}
+                  >
+                    <MenuItem value="federal">federal</MenuItem>
+                    <MenuItem value="section">section</MenuItem>
+                    <MenuItem value="other">other</MenuItem>
+                  </Select>
+                </FormControl>
+              </Stack>
               <TextField
-                type="datetime-local"
-                label="Ouverture"
-                InputLabelProps={{ shrink: true }}
-                value={startAt}
-                onChange={(event) => setStartAt(event.target.value)}
+                label="Description"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
                 fullWidth
               />
-              <TextField
-                type="datetime-local"
-                label="Cloture"
-                InputLabelProps={{ shrink: true }}
-                value={endAt}
-                onChange={(event) => setEndAt(event.target.value)}
-                fullWidth
-              />
-              <TextField
-                label="Anciennete min (jours)"
-                type="number"
-                value={minSeniority}
-                onChange={(event) => setMinSeniority(event.target.value)}
-                fullWidth
-              />
+              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                <TextField
+                  type="datetime-local"
+                  label="Ouverture"
+                  InputLabelProps={{ shrink: true }}
+                  value={startAt}
+                  onChange={(event) => setStartAt(event.target.value)}
+                  fullWidth
+                />
+                <TextField
+                  type="datetime-local"
+                  label="Cloture"
+                  InputLabelProps={{ shrink: true }}
+                  value={endAt}
+                  onChange={(event) => setEndAt(event.target.value)}
+                  fullWidth
+                />
+                <TextField
+                  label="Anciennete min (jours)"
+                  type="number"
+                  value={minSeniority}
+                  onChange={(event) => setMinSeniority(event.target.value)}
+                  fullWidth
+                />
+              </Stack>
+              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                <FormControl fullWidth>
+                  <InputLabel id="allowed-sections">Sections autorisees</InputLabel>
+                  <Select
+                    labelId="allowed-sections"
+                    label="Sections autorisees"
+                    multiple
+                    value={allowedSectionIds}
+                    onChange={(event) =>
+                      setAllowedSectionIds(
+                        typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                      )
+                    }
+                  >
+                    {sectionsQuery.data?.map((section) => (
+                      <MenuItem key={section.id} value={section.id}>
+                        {section.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth>
+                  <InputLabel id="voter-conditions">Conditions vote</InputLabel>
+                  <Select
+                    labelId="voter-conditions"
+                    label="Conditions vote"
+                    multiple
+                    value={voterConditionIds}
+                    onChange={(event) =>
+                      setVoterConditionIds(
+                        typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                      )
+                    }
+                  >
+                    {conditionsQuery.data?.map((condition) => (
+                      <MenuItem key={condition.id} value={condition.id}>
+                        {condition.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <FormControl fullWidth>
+                  <InputLabel id="candidate-conditions">Conditions candidat</InputLabel>
+                  <Select
+                    labelId="candidate-conditions"
+                    label="Conditions candidat"
+                    multiple
+                    value={candidateConditionIds}
+                    onChange={(event) =>
+                      setCandidateConditionIds(
+                        typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                      )
+                    }
+                  >
+                    {conditionsQuery.data?.map((condition) => (
+                      <MenuItem key={condition.id} value={condition.id}>
+                        {condition.name}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Stack>
+              <Box>
+                <Button
+                  variant="contained"
+                  onClick={() => createElectionMutation.mutate()}
+                  disabled={!title || !startAt || !endAt || createElectionMutation.isPending}
+                >
+                  Creer l'election
+                </Button>
+              </Box>
             </Stack>
-            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-              <FormControl fullWidth>
-                <InputLabel id="allowed-sections">Sections autorisees</InputLabel>
-                <Select
-                  labelId="allowed-sections"
-                  label="Sections autorisees"
-                  multiple
-                  value={allowedSectionIds}
-                  onChange={(event) =>
-                    setAllowedSectionIds(
-                      typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
-                    )
-                  }
-                >
-                  {sectionsQuery.data?.map((section) => (
-                    <MenuItem key={section.id} value={section.id}>
-                      {section.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-              <FormControl fullWidth>
-                <InputLabel id="voter-conditions">Conditions vote</InputLabel>
-                <Select
-                  labelId="voter-conditions"
-                  label="Conditions vote"
-                  multiple
-                  value={voterConditionIds}
-                  onChange={(event) =>
-                    setVoterConditionIds(
-                      typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
-                    )
-                  }
-                >
-                  {conditionsQuery.data?.map((condition) => (
-                    <MenuItem key={condition.id} value={condition.id}>
-                      {condition.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-              <FormControl fullWidth>
-                <InputLabel id="candidate-conditions">Conditions candidat</InputLabel>
-                <Select
-                  labelId="candidate-conditions"
-                  label="Conditions candidat"
-                  multiple
-                  value={candidateConditionIds}
-                  onChange={(event) =>
-                    setCandidateConditionIds(
-                      typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
-                    )
-                  }
-                >
-                  {conditionsQuery.data?.map((condition) => (
-                    <MenuItem key={condition.id} value={condition.id}>
-                      {condition.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            </Stack>
-            <Box>
-              <Button
-                variant="contained"
-                onClick={() => createElectionMutation.mutate()}
-                disabled={!title || !startAt || !endAt || createElectionMutation.isPending}
-              >
-                Creer l'election
-              </Button>
-            </Box>
-          </Stack>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardContent>
@@ -2039,79 +2756,152 @@ export function AdminElectionsPage() {
           </Typography>
           {electionsQuery.isLoading ? <Skeleton height={120} /> : null}
           {(electionsQuery.data?.length ?? 0) > 0 ? (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Titre</TableCell>
-                  <TableCell>Statut</TableCell>
-                  <TableCell>Ouverture</TableCell>
-                  <TableCell>Cloture</TableCell>
-                  <TableCell align="right">Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
+            isMobile ? (
+              <Stack spacing={1.3}>
                 {electionsQuery.data?.map((election) => (
-                  <TableRow key={election.id} selected={selectedElectionId === election.id}>
-                    <TableCell>{election.title}</TableCell>
-                    <TableCell>{election.status}</TableCell>
-                    <TableCell>{election.startAt?.toDate().toLocaleString("fr-FR")}</TableCell>
-                    <TableCell>{election.endAt?.toDate().toLocaleString("fr-FR")}</TableCell>
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={1} justifyContent="flex-end">
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => {
-                            setSelectedElectionId(election.id);
-                            setManagedVoterConditionIds(election.voterConditionIds ?? []);
-                            setManagedCandidateConditionIds(election.candidateConditionIds ?? []);
-                          }}
-                        >
-                          Gerer
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => openElectionMutation.mutate(election.id)}
-                          disabled={election.status !== "draft" || openElectionMutation.isPending}
-                        >
-                          Ouvrir
-                        </Button>
-                        <Button
-                          size="small"
-                          color="warning"
-                          variant="outlined"
-                          onClick={() => closeElectionMutation.mutate(election.id)}
-                          disabled={election.status !== "open" || closeElectionMutation.isPending}
-                        >
-                          Fermer
-                        </Button>
-                        <Button
-                          size="small"
-                          color="success"
-                          variant="outlined"
-                          onClick={() => publishElectionMutation.mutate(election.id)}
-                          disabled={election.status !== "closed" || publishElectionMutation.isPending}
-                        >
-                          Publier
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => exportResultsMutation.mutate({ electionId: election.id, format: "csv" })}
-                          disabled={
-                            (election.status !== "published" && election.status !== "closed") ||
-                            exportResultsMutation.isPending
-                          }
-                        >
-                          Export CSV
-                        </Button>
+                  <Card key={election.id} variant="outlined">
+                    <CardContent>
+                      <Stack spacing={0.9}>
+                        <Typography variant="subtitle2">{election.title}</Typography>
+                        <Box>
+                          <Chip size="small" color={electionStatusChipColor(election.status)} label={election.status} />
+                        </Box>
+                        <Typography variant="body2">{`Ouverture: ${election.startAt?.toDate().toLocaleString("fr-FR")}`}</Typography>
+                        <Typography variant="body2">{`Cloture: ${election.endAt?.toDate().toLocaleString("fr-FR")}`}</Typography>
+                        <Stack direction="row" spacing={1} flexWrap="wrap">
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => {
+                              setSelectedElectionId(election.id);
+                              setManagedVoterConditionIds(election.voterConditionIds ?? []);
+                              setManagedCandidateConditionIds(election.candidateConditionIds ?? []);
+                            }}
+                          >
+                            Gerer
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => openElectionMutation.mutate(election.id)}
+                            disabled={election.status !== "draft" || openElectionMutation.isPending}
+                          >
+                            Ouvrir
+                          </Button>
+                          <Button
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            onClick={() => closeElectionMutation.mutate(election.id)}
+                            disabled={election.status !== "open" || closeElectionMutation.isPending}
+                          >
+                            Fermer
+                          </Button>
+                          <Button
+                            size="small"
+                            color="success"
+                            variant="outlined"
+                            onClick={() => publishElectionMutation.mutate(election.id)}
+                            disabled={election.status !== "closed" || publishElectionMutation.isPending}
+                          >
+                            Publier
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => exportResultsMutation.mutate({ electionId: election.id, format: "csv" })}
+                            disabled={
+                              (election.status !== "published" && election.status !== "closed") ||
+                              exportResultsMutation.isPending
+                            }
+                          >
+                            Export CSV
+                          </Button>
+                        </Stack>
                       </Stack>
-                    </TableCell>
-                  </TableRow>
+                    </CardContent>
+                  </Card>
                 ))}
-              </TableBody>
-            </Table>
+              </Stack>
+            ) : (
+              <ResponsiveTable minWidth={1080}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Titre</TableCell>
+                      <TableCell>Statut</TableCell>
+                      <TableCell>Ouverture</TableCell>
+                      <TableCell>Cloture</TableCell>
+                      <TableCell align="right">Actions</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {electionsQuery.data?.map((election) => (
+                      <TableRow key={election.id} selected={selectedElectionId === election.id}>
+                        <TableCell>{election.title}</TableCell>
+                        <TableCell>
+                          <Chip size="small" color={electionStatusChipColor(election.status)} label={election.status} />
+                        </TableCell>
+                        <TableCell>{election.startAt?.toDate().toLocaleString("fr-FR")}</TableCell>
+                        <TableCell>{election.endAt?.toDate().toLocaleString("fr-FR")}</TableCell>
+                        <TableCell align="right">
+                          <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() => {
+                                setSelectedElectionId(election.id);
+                                setManagedVoterConditionIds(election.voterConditionIds ?? []);
+                                setManagedCandidateConditionIds(election.candidateConditionIds ?? []);
+                              }}
+                            >
+                              Gerer
+                            </Button>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() => openElectionMutation.mutate(election.id)}
+                              disabled={election.status !== "draft" || openElectionMutation.isPending}
+                            >
+                              Ouvrir
+                            </Button>
+                            <Button
+                              size="small"
+                              color="warning"
+                              variant="outlined"
+                              onClick={() => closeElectionMutation.mutate(election.id)}
+                              disabled={election.status !== "open" || closeElectionMutation.isPending}
+                            >
+                              Fermer
+                            </Button>
+                            <Button
+                              size="small"
+                              color="success"
+                              variant="outlined"
+                              onClick={() => publishElectionMutation.mutate(election.id)}
+                              disabled={election.status !== "closed" || publishElectionMutation.isPending}
+                            >
+                              Publier
+                            </Button>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() => exportResultsMutation.mutate({ electionId: election.id, format: "csv" })}
+                              disabled={
+                                (election.status !== "published" && election.status !== "closed") ||
+                                exportResultsMutation.isPending
+                              }
+                            >
+                              Export CSV
+                            </Button>
+                          </Stack>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ResponsiveTable>
+            )
           ) : (
             <Alert severity="info">Aucune election configuree.</Alert>
           )}
@@ -2195,7 +2985,7 @@ export function AdminElectionsPage() {
                     value={candidateMemberId}
                     onChange={(event) => setCandidateMemberId(event.target.value)}
                   >
-                    {membersQuery.data?.map((member) => (
+                    {selectableMembers.map((member) => (
                       <MenuItem key={member.id} value={member.id}>
                         {`${member.firstName} ${member.lastName} - ${member.email}`}
                       </MenuItem>
@@ -2208,6 +2998,30 @@ export function AdminElectionsPage() {
                   onChange={(event) => setCandidateBio(event.target.value)}
                   fullWidth
                 />
+              </Stack>
+              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                <TextField
+                  label="Projet du candidat"
+                  value={candidateProjectSummary}
+                  onChange={(event) => setCandidateProjectSummary(event.target.value)}
+                  fullWidth
+                  multiline
+                  minRows={3}
+                />
+                <TextField
+                  label="Video de presentation (URL)"
+                  value={candidateVideoUrl}
+                  onChange={(event) => setCandidateVideoUrl(event.target.value)}
+                  placeholder="https://..."
+                  fullWidth
+                />
+                <TextField
+                  label="Photo du candidat (URL)"
+                  value={candidatePhotoUrl}
+                  onChange={(event) => setCandidatePhotoUrl(event.target.value)}
+                  placeholder="https://..."
+                  fullWidth
+                />
                 <Button
                   variant="contained"
                   onClick={() => addCandidateMutation.mutate()}
@@ -2218,72 +3032,170 @@ export function AdminElectionsPage() {
               </Stack>
 
               {(candidatesQuery.data?.length ?? 0) > 0 ? (
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Candidat</TableCell>
-                      <TableCell>Section</TableCell>
-                      <TableCell>Statut</TableCell>
-                      <TableCell align="right">Actions</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
+                isMobile ? (
+                  <Stack spacing={1.2}>
                     {candidatesQuery.data?.map((candidate: Candidate) => (
-                      <TableRow key={candidate.id}>
-                        <TableCell>{candidate.displayName}</TableCell>
-                        <TableCell>{candidate.sectionName || "-"}</TableCell>
-                        <TableCell>{candidate.status}</TableCell>
-                        <TableCell align="right">
-                          <Stack direction="row" spacing={1} justifyContent="flex-end">
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              onClick={() =>
-                                validateCandidateMutation.mutate({
-                                  electionId: selectedElectionId,
-                                  candidateId: candidate.id,
-                                  status: "validated",
-                                })
-                              }
-                              disabled={validateCandidateMutation.isPending}
-                            >
-                              Valider
-                            </Button>
-                            <Button
-                              size="small"
-                              color="warning"
-                              variant="outlined"
-                              onClick={() =>
-                                validateCandidateMutation.mutate({
-                                  electionId: selectedElectionId,
-                                  candidateId: candidate.id,
-                                  status: "rejected",
-                                })
-                              }
-                              disabled={validateCandidateMutation.isPending}
-                            >
-                              Rejeter
-                            </Button>
-                            <Button
-                              size="small"
-                              color="error"
-                              variant="outlined"
-                              onClick={() =>
-                                removeCandidateMutation.mutate({
-                                  electionId: selectedElectionId,
-                                  candidateId: candidate.id,
-                                })
-                              }
-                              disabled={removeCandidateMutation.isPending}
-                            >
-                              Retirer
-                            </Button>
+                      <Card key={candidate.id} variant="outlined">
+                        <CardContent>
+                          <Stack spacing={0.7}>
+                            <Typography variant="subtitle2">{candidate.displayName}</Typography>
+                            <Typography variant="body2">{`Section: ${candidate.sectionName || "-"}`}</Typography>
+                            <Typography variant="body2">{`Statut: ${candidate.status}`}</Typography>
+                            <Typography variant="body2">{`Projet: ${candidate.projectSummary ? "Oui" : "Non"}`}</Typography>
+                            <Stack direction="row" spacing={1}>
+                              {candidate.photoUrl ? (
+                                <Button size="small" variant="text" href={candidate.photoUrl} target="_blank" rel="noreferrer">
+                                  Photo
+                                </Button>
+                              ) : null}
+                              {candidate.videoUrl ? (
+                                <Button size="small" variant="text" href={candidate.videoUrl} target="_blank" rel="noreferrer">
+                                  Video
+                                </Button>
+                              ) : null}
+                            </Stack>
+                            <Stack direction="row" spacing={1} flexWrap="wrap">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() =>
+                                  validateCandidateMutation.mutate({
+                                    electionId: selectedElectionId,
+                                    candidateId: candidate.id,
+                                    status: "validated",
+                                  })
+                                }
+                                disabled={validateCandidateMutation.isPending}
+                              >
+                                Valider
+                              </Button>
+                              <Button
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                onClick={() =>
+                                  validateCandidateMutation.mutate({
+                                    electionId: selectedElectionId,
+                                    candidateId: candidate.id,
+                                    status: "rejected",
+                                  })
+                                }
+                                disabled={validateCandidateMutation.isPending}
+                              >
+                                Rejeter
+                              </Button>
+                              <Button
+                                size="small"
+                                color="error"
+                                variant="outlined"
+                                onClick={() =>
+                                  removeCandidateMutation.mutate({
+                                    electionId: selectedElectionId,
+                                    candidateId: candidate.id,
+                                  })
+                                }
+                                disabled={removeCandidateMutation.isPending}
+                              >
+                                Retirer
+                              </Button>
+                            </Stack>
                           </Stack>
-                        </TableCell>
-                      </TableRow>
+                        </CardContent>
+                      </Card>
                     ))}
-                  </TableBody>
-                </Table>
+                  </Stack>
+                ) : (
+                <ResponsiveTable minWidth={1120}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Candidat</TableCell>
+                        <TableCell>Section</TableCell>
+                        <TableCell>Statut</TableCell>
+                        <TableCell>Projet</TableCell>
+                        <TableCell>Photo</TableCell>
+                        <TableCell>Video</TableCell>
+                        <TableCell align="right">Actions</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {candidatesQuery.data?.map((candidate: Candidate) => (
+                        <TableRow key={candidate.id}>
+                          <TableCell>{candidate.displayName}</TableCell>
+                          <TableCell>{candidate.sectionName || "-"}</TableCell>
+                          <TableCell>{candidate.status}</TableCell>
+                          <TableCell>{candidate.projectSummary ? "Oui" : "Non"}</TableCell>
+                          <TableCell>
+                            {candidate.photoUrl ? (
+                              <Button size="small" variant="text" href={candidate.photoUrl} target="_blank" rel="noreferrer">
+                                Voir
+                              </Button>
+                            ) : (
+                              "-"
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {candidate.videoUrl ? (
+                              <Button size="small" variant="text" href={candidate.videoUrl} target="_blank" rel="noreferrer">
+                                Ouvrir
+                              </Button>
+                            ) : (
+                              "-"
+                            )}
+                          </TableCell>
+                          <TableCell align="right">
+                            <Stack direction="row" spacing={1} justifyContent="flex-end">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                onClick={() =>
+                                  validateCandidateMutation.mutate({
+                                    electionId: selectedElectionId,
+                                    candidateId: candidate.id,
+                                    status: "validated",
+                                  })
+                                }
+                                disabled={validateCandidateMutation.isPending}
+                              >
+                                Valider
+                              </Button>
+                              <Button
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                onClick={() =>
+                                  validateCandidateMutation.mutate({
+                                    electionId: selectedElectionId,
+                                    candidateId: candidate.id,
+                                    status: "rejected",
+                                  })
+                                }
+                                disabled={validateCandidateMutation.isPending}
+                              >
+                                Rejeter
+                              </Button>
+                              <Button
+                                size="small"
+                                color="error"
+                                variant="outlined"
+                                onClick={() =>
+                                  removeCandidateMutation.mutate({
+                                    electionId: selectedElectionId,
+                                    candidateId: candidate.id,
+                                  })
+                                }
+                                disabled={removeCandidateMutation.isPending}
+                              >
+                                Retirer
+                              </Button>
+                            </Stack>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </ResponsiveTable>
+                )
               ) : (
                 <Alert severity="info">Aucun candidat sur cette election.</Alert>
               )}
@@ -2312,6 +3224,8 @@ export function AdminElectionsPage() {
 }
 
 export function AdminLogsPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [actionFilter, setActionFilter] = useState("");
   const logsQuery = useQuery({
     queryKey: ["logs", actionFilter],
@@ -2344,30 +3258,53 @@ export function AdminLogsPage() {
         <CardContent>
           {logsQuery.isLoading ? <Skeleton height={120} /> : null}
           {(logsQuery.data?.logs.length ?? 0) > 0 ? (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Date</TableCell>
-                  <TableCell>Action</TableCell>
-                  <TableCell>Acteur</TableCell>
-                  <TableCell>Cible</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
+            isMobile ? (
+              <Stack spacing={1.2}>
                 {logsQuery.data?.logs.map((log, index) => {
                   const timestamp = (log.timestamp as { toDate?: () => Date } | undefined)?.toDate?.();
                   const key = String(log.id ?? `${String(log.action ?? "log")}-${index}`);
                   return (
-                    <TableRow key={key}>
-                      <TableCell>{timestamp ? timestamp.toLocaleString("fr-FR") : "-"}</TableCell>
-                      <TableCell>{String(log.action ?? "-")}</TableCell>
-                      <TableCell>{String(log.actorId ?? "-")}</TableCell>
-                      <TableCell>{`${String(log.targetType ?? "")}:${String(log.targetId ?? "")}`}</TableCell>
-                    </TableRow>
+                    <Card key={key} variant="outlined">
+                      <CardContent>
+                        <Stack spacing={0.5}>
+                          <Typography variant="body2">{`Date: ${timestamp ? timestamp.toLocaleString("fr-FR") : "-"}`}</Typography>
+                          <Typography variant="body2">{`Action: ${String(log.action ?? "-")}`}</Typography>
+                          <Typography variant="body2">{`Acteur: ${String(log.actorId ?? "-")}`}</Typography>
+                          <Typography variant="body2">{`Cible: ${String(log.targetType ?? "")}:${String(log.targetId ?? "")}`}</Typography>
+                        </Stack>
+                      </CardContent>
+                    </Card>
                   );
                 })}
-              </TableBody>
-            </Table>
+              </Stack>
+            ) : (
+              <ResponsiveTable minWidth={920}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Date</TableCell>
+                      <TableCell>Action</TableCell>
+                      <TableCell>Acteur</TableCell>
+                      <TableCell>Cible</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {logsQuery.data?.logs.map((log, index) => {
+                      const timestamp = (log.timestamp as { toDate?: () => Date } | undefined)?.toDate?.();
+                      const key = String(log.id ?? `${String(log.action ?? "log")}-${index}`);
+                      return (
+                        <TableRow key={key}>
+                          <TableCell>{timestamp ? timestamp.toLocaleString("fr-FR") : "-"}</TableCell>
+                          <TableCell>{String(log.action ?? "-")}</TableCell>
+                          <TableCell>{String(log.actorId ?? "-")}</TableCell>
+                          <TableCell>{`${String(log.targetType ?? "")}:${String(log.targetId ?? "")}`}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </ResponsiveTable>
+            )
           ) : (
             <Alert severity="info">Aucun log a afficher.</Alert>
           )}
@@ -2378,10 +3315,22 @@ export function AdminLogsPage() {
 }
 
 export function SuperAdminAdminsPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const { role } = useAuth();
   const queryClient = useQueryClient();
   const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
   const [error, setError] = useState<string | null>(null);
   const [pendingRoles, setPendingRoles] = useState<Record<string, Member["role"]>>({});
+  const canAssignSuperAdmin = role === "superadmin";
+  const membersForRoleManagement = useMemo(
+    () =>
+      (membersQuery.data ?? []).filter((member) => {
+        if (canAssignSuperAdmin) return true;
+        return member.role !== "superadmin";
+      }),
+    [membersQuery.data, canAssignSuperAdmin],
+  );
 
   const changeRoleMutation = useMutation({
     mutationFn: ({ memberId, newRole }: { memberId: string; newRole: Member["role"] }) =>
@@ -2396,63 +3345,114 @@ export function SuperAdminAdminsPage() {
   return (
     <Stack spacing={2}>
       <Typography variant="h4">Gestion admins</Typography>
+      {!canAssignSuperAdmin ? <Alert severity="info">Vous pouvez promouvoir un membre en admin.</Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
       <Card>
         <CardContent>
           {membersQuery.isLoading ? <Skeleton height={120} /> : null}
-          {(membersQuery.data?.length ?? 0) > 0 ? (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Membre</TableCell>
-                  <TableCell>Email</TableCell>
-                  <TableCell>Role actuel</TableCell>
-                  <TableCell>Nouveau role</TableCell>
-                  <TableCell align="right">Action</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {membersQuery.data?.map((member) => (
-                  <TableRow key={member.id}>
-                    <TableCell>{`${member.firstName} ${member.lastName}`}</TableCell>
-                    <TableCell>{member.email}</TableCell>
-                    <TableCell>{member.role}</TableCell>
-                    <TableCell>
-                      <FormControl size="small" sx={{ minWidth: 180 }}>
-                        <Select
-                          value={pendingRoles[member.id] ?? member.role}
-                          onChange={(event) =>
-                            setPendingRoles((previous) => ({
-                              ...previous,
-                              [member.id]: event.target.value as Member["role"],
-                            }))
-                          }
-                        >
-                          <MenuItem value="member">member</MenuItem>
-                          <MenuItem value="admin">admin</MenuItem>
-                          <MenuItem value="superadmin">superadmin</MenuItem>
-                        </Select>
-                      </FormControl>
-                    </TableCell>
-                    <TableCell align="right">
-                      <Button
-                        variant="contained"
-                        size="small"
-                        onClick={() =>
-                          changeRoleMutation.mutate({
-                            memberId: member.id,
-                            newRole: pendingRoles[member.id] ?? member.role,
-                          })
-                        }
-                        disabled={changeRoleMutation.isPending}
-                      >
-                        Appliquer
-                      </Button>
-                    </TableCell>
-                  </TableRow>
+          {(membersForRoleManagement.length ?? 0) > 0 ? (
+            isMobile ? (
+              <Stack spacing={1.2}>
+                {membersForRoleManagement.map((member) => (
+                  <Card key={member.id} variant="outlined">
+                    <CardContent>
+                      <Stack spacing={0.8}>
+                        <Typography variant="subtitle2">{`${member.firstName} ${member.lastName}`}</Typography>
+                        <Typography variant="body2">{member.email}</Typography>
+                        <Typography variant="body2">{`Role actuel: ${member.role}`}</Typography>
+                        <FormControl size="small" fullWidth>
+                          <Select
+                            value={pendingRoles[member.id] ?? member.role}
+                            onChange={(event) =>
+                              setPendingRoles((previous) => ({
+                                ...previous,
+                                [member.id]: event.target.value as Member["role"],
+                              }))
+                            }
+                          >
+                            <MenuItem value="member">member</MenuItem>
+                            <MenuItem value="admin">admin</MenuItem>
+                            {canAssignSuperAdmin ? <MenuItem value="superadmin">superadmin</MenuItem> : null}
+                          </Select>
+                        </FormControl>
+                        <Box display="flex" justifyContent="flex-end">
+                          <Button
+                            variant="contained"
+                            size="small"
+                            onClick={() =>
+                              changeRoleMutation.mutate({
+                                memberId: member.id,
+                                newRole: pendingRoles[member.id] ?? member.role,
+                              })
+                            }
+                            disabled={changeRoleMutation.isPending}
+                          >
+                            Appliquer
+                          </Button>
+                        </Box>
+                      </Stack>
+                    </CardContent>
+                  </Card>
                 ))}
-              </TableBody>
-            </Table>
+              </Stack>
+            ) : (
+              <ResponsiveTable minWidth={920}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Prenom</TableCell>
+                      <TableCell>Nom</TableCell>
+                      <TableCell>Email</TableCell>
+                      <TableCell>Role actuel</TableCell>
+                      <TableCell>Nouveau role</TableCell>
+                      <TableCell align="right">Action</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {membersForRoleManagement.map((member) => (
+                      <TableRow key={member.id}>
+                        <TableCell>{member.firstName}</TableCell>
+                        <TableCell>{member.lastName}</TableCell>
+                        <TableCell>{member.email}</TableCell>
+                        <TableCell>{member.role}</TableCell>
+                        <TableCell>
+                          <FormControl size="small" sx={{ minWidth: 180 }}>
+                            <Select
+                              value={pendingRoles[member.id] ?? member.role}
+                              onChange={(event) =>
+                                setPendingRoles((previous) => ({
+                                  ...previous,
+                                  [member.id]: event.target.value as Member["role"],
+                                }))
+                              }
+                            >
+                              <MenuItem value="member">member</MenuItem>
+                              <MenuItem value="admin">admin</MenuItem>
+                              {canAssignSuperAdmin ? <MenuItem value="superadmin">superadmin</MenuItem> : null}
+                            </Select>
+                          </FormControl>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Button
+                            variant="contained"
+                            size="small"
+                            onClick={() =>
+                              changeRoleMutation.mutate({
+                                memberId: member.id,
+                                newRole: pendingRoles[member.id] ?? member.role,
+                              })
+                            }
+                            disabled={changeRoleMutation.isPending}
+                          >
+                            Appliquer
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ResponsiveTable>
+            )
           ) : (
             <Alert severity="info">Aucun membre disponible.</Alert>
           )}

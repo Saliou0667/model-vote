@@ -2,7 +2,7 @@
   "functions": {
     "source": "functions",
     "runtime": "nodejs20",
-    "predeploy": ["pnpm --filter @model/functions build"]
+    "predeploy": ["pnpm --filter ./functions build"]
   },
   "hosting": {
     "public": "apps/web/dist",

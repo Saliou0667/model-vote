@@ -38,17 +38,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const loadMemberProfile = useCallback(
     async (nextUser: User) => {
       await ensureProfile();
-      const token = await getIdTokenResult(nextUser, true);
-      const claimRole = token.claims.role as UserRole | undefined;
+      const token = await getIdTokenResult(nextUser, true).catch(() => null);
+      const claimRole = token?.claims.role as UserRole | undefined;
 
-      const memberRef = doc(db, "members", nextUser.uid);
-      const memberSnap = await getDoc(memberRef);
-      const nextProfile = memberSnap.exists()
-        ? ({ uid: memberSnap.id, ...(memberSnap.data() as Omit<MemberProfile, "uid">) } as MemberProfile)
-        : null;
+      try {
+        const memberRef = doc(db, "members", nextUser.uid);
+        const memberSnap = await getDoc(memberRef);
+        const nextProfile = memberSnap.exists()
+          ? ({ uid: memberSnap.id, ...(memberSnap.data() as Omit<MemberProfile, "uid">) } as MemberProfile)
+          : null;
 
-      setProfile(nextProfile);
-      setRole(nextProfile?.role ?? claimRole ?? "member");
+        setProfile(nextProfile);
+        setRole(nextProfile?.role ?? claimRole ?? "member");
+      } catch {
+        // Keep app usable while backend/emulators are warming up.
+        setProfile(null);
+        setRole(claimRole ?? "member");
+      }
     },
     [ensureProfile],
   );
@@ -78,6 +84,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       try {
         await loadMemberProfile(nextUser);
+      } catch {
+        setProfile(null);
+        setRole("member");
       } finally {
         setLoading(false);
       }

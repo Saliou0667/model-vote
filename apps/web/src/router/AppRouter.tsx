@@ -14,6 +14,7 @@ import {
   AdminSectionsPage,
   MemberDashboardPage,
   MemberEligibilityPage,
+  MemberCandidateSpacePage,
   MemberProfilePage,
   MemberResultsPage,
   MemberVotePage,
@@ -53,6 +54,7 @@ export function AppRouter() {
       >
         <Route index element={<MemberDashboardPage />} />
         <Route path="profile" element={<MemberProfilePage />} />
+        <Route path="candidate-space" element={<MemberCandidateSpacePage />} />
         <Route path="eligibility" element={<MemberEligibilityPage />} />
         <Route path="vote" element={<MemberVotePage />} />
         <Route path="results" element={<MemberResultsPage />} />
@@ -72,13 +74,14 @@ export function AppRouter() {
         <Route path="conditions" element={<AdminConditionsPage />} />
         <Route path="contributions" element={<AdminContributionsPage />} />
         <Route path="elections" element={<AdminElectionsPage />} />
+        <Route path="candidates" element={<AdminElectionsPage />} />
         <Route path="logs" element={<AdminLogsPage />} />
         <Route
           path="admins"
           element={
-            <RequireSuperAdmin>
+            <RequireAdmin>
               <SuperAdminAdminsPage />
-            </RequireSuperAdmin>
+            </RequireAdmin>
           }
         />
         <Route

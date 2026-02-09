@@ -28,6 +28,7 @@ model-vote/
 
 ```bash
 pnpm install
+pnpm seed:emulator
 pnpm dev
 pnpm build
 pnpm lint
@@ -40,6 +41,7 @@ pnpm typecheck
 
 - le frontend (`apps/web`)
 - les emulateurs Firebase (`auth`, `firestore`, `functions`)
+- import/export automatique des donnees emulateur dans `.emulator-data/` (persistance locale)
 
 ## Documentation
 
