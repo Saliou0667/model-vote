@@ -33,6 +33,8 @@ function toMember(id: string, data: DocumentData): Member {
     sectionId: String(data.sectionId ?? ""),
     role: (data.role ?? "member") as Member["role"],
     status: (data.status ?? "pending") as Member["status"],
+    registrationSource: (data.registrationSource ?? "self_registration") as Member["registrationSource"],
+    votingApprovedByAdmin: Boolean(data.votingApprovedByAdmin),
     emailVerified: Boolean(data.emailVerified),
     contributionUpToDate: Boolean(data.contributionUpToDate),
     createdAt: data.createdAt,

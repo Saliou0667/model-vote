@@ -1235,7 +1235,6 @@ export function AdminMembersPage() {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [sectionId, setSectionId] = useState("");
-  const [status, setStatus] = useState<Member["status"]>("pending");
   const [editingMember, setEditingMember] = useState<Member | null>(null);
 
   const createMutation = useMutation({
@@ -1248,7 +1247,6 @@ export function AdminMembersPage() {
         phone,
         password,
         sectionId,
-        status,
       }),
     onSuccess: async () => {
       setError(null);
@@ -1258,7 +1256,6 @@ export function AdminMembersPage() {
       setCity("");
       setPhone("");
       setPassword("");
-      setStatus("pending");
       await queryClient.invalidateQueries({ queryKey: queryKeys.members });
       await queryClient.invalidateQueries({ queryKey: queryKeys.sections });
     },
@@ -1374,20 +1371,10 @@ export function AdminMembersPage() {
                   ))}
                 </Select>
               </FormControl>
-              <FormControl fullWidth>
-                <InputLabel id="member-status">Statut</InputLabel>
-                <Select
-                  labelId="member-status"
-                  label="Statut"
-                  value={status}
-                  onChange={(event) => setStatus(event.target.value as Member["status"])}
-                >
-                  <MenuItem value="pending">pending</MenuItem>
-                  <MenuItem value="active">active</MenuItem>
-                  <MenuItem value="suspended">suspended</MenuItem>
-                </Select>
-              </FormControl>
             </Stack>
+            <Alert severity="info">
+              Les comptes crees par admin sont actives automatiquement et consideres eligibles au vote.
+            </Alert>
             <Box>
               <Button
                 variant="contained"

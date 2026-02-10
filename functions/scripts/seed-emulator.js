@@ -36,6 +36,8 @@ async function upsertUser(userConfig) {
     sectionId,
     joinedDaysAgo,
     contributionUpToDate,
+    registrationSource,
+    votingApprovedByAdmin,
   } = userConfig;
 
   let userRecord;
@@ -74,6 +76,8 @@ async function upsertUser(userConfig) {
         sectionId,
         role,
         status,
+        registrationSource: registrationSource ?? (role === "member" ? "self_registration" : "admin_created"),
+        votingApprovedByAdmin: votingApprovedByAdmin ?? true,
         joinedAt: tsFromNow(-joinedDaysAgo),
         profileCompleted: true,
         contributionUpToDate,

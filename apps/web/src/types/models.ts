@@ -19,6 +19,8 @@ export type Member = {
   sectionId?: string;
   role: "member" | "admin" | "superadmin";
   status: "pending" | "active" | "suspended";
+  registrationSource?: "self_registration" | "admin_created";
+  votingApprovedByAdmin?: boolean;
   emailVerified?: boolean;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;

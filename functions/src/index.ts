@@ -9,6 +9,7 @@ initializeApp();
 
 type Role = "member" | "admin" | "superadmin";
 type MemberStatus = "pending" | "active" | "suspended";
+type MemberRegistrationSource = "self_registration" | "admin_created";
 type ContributionPeriodicity = "monthly" | "quarterly" | "yearly";
 type ActiveContributionPolicy = {
   id: string;
@@ -122,6 +123,15 @@ async function getRequesterRole(uid: string): Promise<Role | null> {
   return (snap.data()?.role as Role | undefined) ?? null;
 }
 
+async function ensureUniqueMemberEmail(email: string, exceptUid?: string): Promise<void> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const duplicatesSnap = await db.collection("members").where("email", "==", normalizedEmail).limit(5).get();
+  const duplicate = duplicatesSnap.docs.find((doc) => doc.id !== exceptUid);
+  if (duplicate) {
+    throw new HttpsError("already-exists", "ERROR_EMAIL_EXISTS");
+  }
+}
+
 function requireAnyRole(role: Role | null, allowed: Role[]) {
   if (!role || !allowed.includes(role)) {
     throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED");
@@ -173,6 +183,10 @@ function isProfileCompleted(member: {
   const city = typeof member.city === "string" ? member.city.trim() : "";
   const phone = typeof member.phone === "string" ? member.phone.trim() : "";
   return Boolean(firstName && lastName && city && phone);
+}
+
+function normalizeRegistrationSource(value: unknown): MemberRegistrationSource {
+  return value === "admin_created" ? "admin_created" : "self_registration";
 }
 
 async function getActiveContributionPolicy(): Promise<ActiveContributionPolicy | null> {
@@ -229,17 +243,29 @@ async function checkMemberAgainstRules(input: {
   conditionIds: string[];
   minSeniority?: number;
   allowedSectionIds?: string[] | null;
+  context?: "vote" | "candidate";
 }): Promise<{ eligible: boolean; reasons: string[] }> {
   const memberSnap = await db.collection("members").doc(input.memberId).get();
   if (!memberSnap.exists) return { eligible: false, reasons: ["member_not_found"] };
   const member = memberSnap.data() as {
     status?: MemberStatus;
+    registrationSource?: MemberRegistrationSource;
+    votingApprovedByAdmin?: boolean;
     joinedAt?: { toDate?: () => Date };
     sectionId?: string;
   };
 
+  const context = input.context ?? "vote";
+  const registrationSource = normalizeRegistrationSource(member.registrationSource);
+  const votingApprovedByAdmin = member.votingApprovedByAdmin !== false;
   const reasons: string[] = [];
   if (member.status !== "active") reasons.push("status_inactive");
+  if (context === "vote" && registrationSource === "self_registration" && !votingApprovedByAdmin) {
+    reasons.push("admin_approval_required");
+  }
+  if (context === "vote" && member.status === "active" && registrationSource === "admin_created" && votingApprovedByAdmin) {
+    return { eligible: true, reasons };
+  }
 
   const contributionOk = await isContributionUpToDate(input.memberId);
   if (!contributionOk) reasons.push("contribution_not_up_to_date");
@@ -282,6 +308,8 @@ export const ensureMemberProfile = onCall(async (request) => {
   if (!email) {
     throw new HttpsError("failed-precondition", "Email not available on token.");
   }
+  const normalizedEmail = email.trim().toLowerCase();
+  await ensureUniqueMemberEmail(normalizedEmail, uid);
 
   const memberRef = db.collection("members").doc(uid);
   const emailVerified = request.auth?.token?.email_verified ?? false;
@@ -291,9 +319,11 @@ export const ensureMemberProfile = onCall(async (request) => {
     if (!snap.exists) {
       tx.set(memberRef, {
         uid,
-        email,
+        email: normalizedEmail,
         role: "member",
         status: "pending",
+        registrationSource: "self_registration",
+        votingApprovedByAdmin: false,
         emailVerified,
         firstName: "",
         lastName: "",
@@ -316,14 +346,23 @@ export const ensureMemberProfile = onCall(async (request) => {
       return { role: "member" as Role, status: "pending" as MemberStatus };
     }
 
-    const current = snap.data() ?? {};
+    const current = (snap.data() ?? {}) as {
+      role?: Role;
+      status?: MemberStatus;
+      registrationSource?: MemberRegistrationSource;
+    };
+    const mergePatch: Record<string, unknown> = {
+      email: normalizedEmail,
+      emailVerified,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (!current.registrationSource && current.role === "member" && current.status === "pending") {
+      mergePatch.registrationSource = "self_registration";
+      mergePatch.votingApprovedByAdmin = false;
+    }
     tx.set(
       memberRef,
-      {
-        email,
-        emailVerified,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
+      mergePatch,
       { merge: true },
     );
     return {
@@ -590,13 +629,10 @@ export const createMember = onCall(async (request) => {
   const sectionId = requireString(request.data?.sectionId, "sectionId");
   const phone = optionalString(request.data?.phone) ?? "";
   const providedPassword = request.data?.password !== undefined ? requirePassword(request.data?.password, "password") : null;
-  const status = requireEnum<MemberStatus>(request.data?.status ?? "pending", "status", [
-    "pending",
-    "active",
-    "suspended",
-  ]);
+  const status: MemberStatus = "active";
 
   await ensureSectionExists(sectionId);
+  await ensureUniqueMemberEmail(email);
 
   const initialPassword = providedPassword ?? createTempPassword();
   let createdUid = "";
@@ -628,6 +664,8 @@ export const createMember = onCall(async (request) => {
         sectionId,
         role: "member",
         status,
+        registrationSource: "admin_created",
+        votingApprovedByAdmin: true,
         emailVerified: false,
         profileCompleted: isProfileCompleted({ firstName, lastName, city, phone }),
         joinedAt: FieldValue.serverTimestamp(),
@@ -644,7 +682,7 @@ export const createMember = onCall(async (request) => {
         actorRole: actorRole ?? "admin",
         targetType: "member",
         targetId: user.uid,
-        details: { email, status },
+        details: { email, status, registrationSource: "admin_created", votingApprovedByAdmin: true },
       });
     });
 
@@ -742,6 +780,10 @@ export const updateMember = onCall(async (request) => {
     }
 
     const previous = memberSnap.data() as {
+      role?: Role;
+      status?: MemberStatus;
+      registrationSource?: MemberRegistrationSource;
+      votingApprovedByAdmin?: boolean;
       sectionId?: string;
       firstName?: string;
       lastName?: string;
@@ -774,6 +816,17 @@ export const updateMember = onCall(async (request) => {
       }
 
       updates.sectionId = nextSectionId;
+    }
+
+    const previousStatus = previous.status;
+    const nextStatus =
+      Object.prototype.hasOwnProperty.call(updates, "status") ? (updates.status as MemberStatus | undefined) : previousStatus;
+    const registrationSource = normalizeRegistrationSource(previous.registrationSource);
+    const isSelfRegistrationMember = (previous.role ?? "member") === "member" && registrationSource === "self_registration";
+
+    if (!isSelf && isSelfRegistrationMember && nextStatus) {
+      if (!previous.registrationSource) updates.registrationSource = "self_registration";
+      updates.votingApprovedByAdmin = nextStatus === "active";
     }
 
     const merged = { ...previous, ...updates };
@@ -1166,10 +1219,14 @@ export const computeEligibility = onCall(async (request) => {
   if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
   const member = memberSnap.data() as {
     status?: MemberStatus;
+    registrationSource?: MemberRegistrationSource;
+    votingApprovedByAdmin?: boolean;
     joinedAt?: { toDate?: () => Date };
     sectionId?: string;
   };
 
+  const registrationSource = normalizeRegistrationSource(member.registrationSource);
+  const votingApprovedByAdmin = member.votingApprovedByAdmin !== false;
   const reasons: Array<{
     condition: string;
     met: boolean;
@@ -1182,6 +1239,25 @@ export const computeEligibility = onCall(async (request) => {
     met: statusOk,
     detail: statusOk ? "Statut actif" : "Le membre doit etre actif",
   });
+
+  if (registrationSource === "self_registration") {
+    reasons.push({
+      condition: "admin_validation",
+      met: votingApprovedByAdmin,
+      detail: votingApprovedByAdmin
+        ? "Validation admin effectuee"
+        : "Un administrateur doit valider votre inscription pour activer le vote",
+    });
+  }
+
+  if (statusOk && registrationSource === "admin_created" && votingApprovedByAdmin) {
+    reasons.push({
+      condition: "admin_provisioned_override",
+      met: true,
+      detail: "Compte cree par admin: eligibilite vote validee automatiquement",
+    });
+    return ok({ eligible: true, reasons });
+  }
 
   const contributionOk = await isContributionUpToDate(memberId);
   reasons.push({
@@ -1417,6 +1493,7 @@ export const addCandidate = onCall(async (request) => {
     conditionIds: election.candidateConditionIds ?? [],
     minSeniority: election.minSeniority ?? 0,
     allowedSectionIds: election.allowedSectionIds ?? null,
+    context: "candidate",
   });
   if (!eligibility.eligible) {
     throw new HttpsError("failed-precondition", "ERROR_CANDIDATE_NOT_ELIGIBLE");
@@ -1677,6 +1754,7 @@ export const openElection = onCall(async (request) => {
       conditionIds: election.voterConditionIds ?? [],
       minSeniority: election.minSeniority ?? 0,
       allowedSectionIds: election.allowedSectionIds ?? null,
+      context: "vote",
     });
     if (eligible.eligible) totalEligibleVoters += 1;
   }
@@ -1761,6 +1839,7 @@ export const castVote = onCall(async (request) => {
     conditionIds: election.voterConditionIds ?? [],
     minSeniority: election.minSeniority ?? 0,
     allowedSectionIds: election.allowedSectionIds ?? null,
+    context: "vote",
   });
   if (!strictEligibility.eligible) {
     throw new HttpsError("failed-precondition", "ERROR_NOT_ELIGIBLE");

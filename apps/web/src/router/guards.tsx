@@ -21,7 +21,7 @@ export function AppEntryRedirect() {
   if (!user) return <Navigate to="/auth/login" replace />;
   if (role === "admin" || role === "superadmin") return <Navigate to="/admin" replace />;
   if (profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
-  return <Navigate to="/member/eligibility" replace />;
+  return <Navigate to="/member/vote" replace />;
 }
 
 export function RequireAuth({ children }: GuardProps) {

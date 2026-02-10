@@ -1,4 +1,5 @@
 import { Route, Routes } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import { AdminLayout } from "../layouts/AdminLayout";
 import { AuthLayout } from "../layouts/AuthLayout";
 import { MemberLayout } from "../layouts/MemberLayout";
@@ -12,7 +13,6 @@ import {
   AdminLogsPage,
   AdminMembersPage,
   AdminSectionsPage,
-  MemberDashboardPage,
   MemberEligibilityPage,
   MemberCandidateSpacePage,
   MemberProfilePage,
@@ -52,7 +52,7 @@ export function AppRouter() {
           </RequireAuth>
         }
       >
-        <Route index element={<MemberDashboardPage />} />
+        <Route index element={<Navigate to="/member/vote" replace />} />
         <Route path="profile" element={<MemberProfilePage />} />
         <Route path="candidate-space" element={<MemberCandidateSpacePage />} />
         <Route path="eligibility" element={<MemberEligibilityPage />} />

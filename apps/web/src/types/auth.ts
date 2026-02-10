@@ -8,6 +8,8 @@ export interface MemberProfile {
   email: string;
   role: UserRole;
   status: MemberStatus;
+  registrationSource?: "self_registration" | "admin_created";
+  votingApprovedByAdmin?: boolean;
   firstName?: string;
   lastName?: string;
   city?: string;
