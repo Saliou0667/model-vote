@@ -2458,7 +2458,11 @@ export function AdminElectionsPage() {
   const candidateMode = location.pathname.startsWith("/admin/candidates");
   const { role } = useAuth();
   const queryClient = useQueryClient();
-  const electionsQuery = useQuery({ queryKey: queryKeys.elections, queryFn: fetchElections });
+  const electionsQuery = useQuery({
+    queryKey: queryKeys.elections,
+    queryFn: fetchElections,
+    refetchInterval: candidateMode ? false : 5000,
+  });
   const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
   const conditionsQuery = useQuery({
     queryKey: queryKeys.conditions,
@@ -2501,6 +2505,14 @@ export function AdminElectionsPage() {
     setManagedVoterConditionIds(first.voterConditionIds ?? []);
     setManagedCandidateConditionIds(first.candidateConditionIds ?? []);
   }, [candidateMode, electionsQuery.data, selectedElectionId]);
+  useEffect(() => {
+    if (candidateMode) return;
+    if (selectedElectionId) return;
+    const openFirst = (electionsQuery.data ?? []).find((election) => election.status === "open");
+    const fallback = openFirst ?? electionsQuery.data?.[0];
+    if (!fallback) return;
+    setSelectedElectionId(fallback.id);
+  }, [candidateMode, electionsQuery.data, selectedElectionId]);
   const canEditSelectedElectionConditions = Boolean(
     selectedElection &&
       (role === "superadmin" || selectedElection.status === "draft" || selectedElection.status === "open"),
@@ -2541,6 +2553,28 @@ export function AdminElectionsPage() {
         }>;
       }>,
     enabled: Boolean(!candidateMode && selectedElectionId),
+    refetchInterval: ({ state }) => {
+      const status = (state.data as { election?: { status?: string } } | undefined)?.election?.status;
+      return status === "open" ? 5000 : false;
+    },
+  });
+  const electionIntegrityQuery = useQuery({
+    queryKey: ["electionIntegrity", selectedElectionId],
+    queryFn: () =>
+      callFunction("verifyElectionVoteIntegrity", { electionId: selectedElectionId }) as Promise<{
+        election: { electionId: string; title: string; status: string };
+        healthy: boolean;
+        issues: string[];
+        stats: {
+          ballotsCount: number;
+          tokenIndexVotedCount: number;
+          totalVotesCastDoc: number;
+          missingBallotForTokenIndexCount: number;
+          missingCandidateInTokenIndexCount: number;
+        };
+      }>,
+    enabled: Boolean(!candidateMode && selectedElectionId),
+    refetchInterval: selectedElection?.status === "open" ? 15000 : false,
   });
 
   const createElectionMutation = useMutation({
@@ -2838,6 +2872,15 @@ export function AdminElectionsPage() {
                         <Stack direction="row" spacing={1} flexWrap="wrap">
                           <Button
                             size="small"
+                            variant="contained"
+                            onClick={() => {
+                              setSelectedElectionId(election.id);
+                            }}
+                          >
+                            Scores
+                          </Button>
+                          <Button
+                            size="small"
                             variant="outlined"
                             onClick={() => {
                               setSelectedElectionId(election.id);
@@ -2921,6 +2964,15 @@ export function AdminElectionsPage() {
                           <Stack direction="row" spacing={1} justifyContent="flex-end">
                             <Button
                               size="small"
+                              variant="contained"
+                              onClick={() => {
+                                setSelectedElectionId(election.id);
+                              }}
+                            >
+                              Scores
+                            </Button>
+                            <Button
+                              size="small"
                               variant="outlined"
                               onClick={() => {
                                 setSelectedElectionId(election.id);
@@ -2987,20 +3039,41 @@ export function AdminElectionsPage() {
             <Stack spacing={2}>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ sm: "center" }}>
                 <Typography variant="h6">Scores des votes</Typography>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  onClick={() => electionScoresQuery.refetch()}
-                  disabled={!selectedElectionId || electionScoresQuery.isFetching}
-                >
-                  Actualiser
-                </Button>
+                <Stack direction="row" spacing={1}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => electionScoresQuery.refetch()}
+                    disabled={!selectedElectionId || electionScoresQuery.isFetching}
+                  >
+                    Actualiser scores
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="secondary"
+                    onClick={() => electionIntegrityQuery.refetch()}
+                    disabled={!selectedElectionId || electionIntegrityQuery.isFetching}
+                  >
+                    Verifier l'integrite
+                  </Button>
+                </Stack>
               </Stack>
 
               {!selectedElectionId ? <Alert severity="info">Selectionnez une election via "Gerer" pour voir les scores.</Alert> : null}
               {selectedElectionId && electionScoresQuery.isLoading ? <Skeleton height={120} /> : null}
               {selectedElectionId && electionScoresQuery.error ? (
                 <Alert severity="error">{getErrorMessage(electionScoresQuery.error)}</Alert>
+              ) : null}
+              {selectedElectionId && electionIntegrityQuery.error ? (
+                <Alert severity="error">{getErrorMessage(electionIntegrityQuery.error)}</Alert>
+              ) : null}
+              {selectedElectionId && electionIntegrityQuery.data ? (
+                <Alert severity={electionIntegrityQuery.data.healthy ? "success" : "error"}>
+                  {electionIntegrityQuery.data.healthy
+                    ? `Integrite OK: ${electionIntegrityQuery.data.stats.ballotsCount} bulletins, ${electionIntegrityQuery.data.stats.tokenIndexVotedCount} index votants, totalVotesCast=${electionIntegrityQuery.data.stats.totalVotesCastDoc}.`
+                    : `Incoherence detectee (${electionIntegrityQuery.data.issues.join(", ")}). Bulletins=${electionIntegrityQuery.data.stats.ballotsCount}, index votants=${electionIntegrityQuery.data.stats.tokenIndexVotedCount}, totalVotesCast=${electionIntegrityQuery.data.stats.totalVotesCastDoc}.`}
+                </Alert>
               ) : null}
 
               {selectedElectionId && electionScoresQuery.data ? (

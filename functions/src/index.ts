@@ -2040,6 +2040,94 @@ export const getElectionScores = onCall(async (request) => {
   });
 });
 
+export const verifyElectionVoteIntegrity = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const electionSnap = await db.collection("elections").doc(electionId).get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+
+  const election = electionSnap.data() as {
+    title?: string;
+    status?: string;
+    totalVotesCast?: number;
+  };
+
+  const ballotsSnap = await db.collection(`elections/${electionId}/ballots`).get();
+  const tokenIndexSnap = await db.collection(`elections/${electionId}/tokenIndex`).where("hasVoted", "==", true).get();
+
+  const ballotsCount = ballotsSnap.size;
+  const tokenIndexVotedCount = tokenIndexSnap.size;
+  const totalVotesCastDoc = Number(election.totalVotesCast ?? 0);
+
+  const ballotTokens = new Set<string>();
+  ballotsSnap.docs.forEach((doc) => {
+    const token = String(doc.data().voteToken ?? doc.id);
+    if (token) ballotTokens.add(token);
+  });
+
+  let missingBallotForTokenIndexCount = 0;
+  let missingCandidateInTokenIndexCount = 0;
+  tokenIndexSnap.docs.forEach((doc) => {
+    const data = doc.data() as { voteToken?: string; candidateId?: string };
+    const token = String(data.voteToken ?? "");
+    if (!token || !ballotTokens.has(token)) {
+      missingBallotForTokenIndexCount += 1;
+    }
+    if (!String(data.candidateId ?? "")) {
+      missingCandidateInTokenIndexCount += 1;
+    }
+  });
+
+  const issues: string[] = [];
+  if (totalVotesCastDoc !== ballotsCount) {
+    issues.push("mismatch_totalVotesCast_vs_ballots");
+  }
+  if (tokenIndexVotedCount !== ballotsCount) {
+    issues.push("mismatch_tokenIndex_vs_ballots");
+  }
+  if (missingBallotForTokenIndexCount > 0) {
+    issues.push("missing_ballot_for_token_index");
+  }
+  if (missingCandidateInTokenIndexCount > 0) {
+    issues.push("missing_candidate_in_token_index");
+  }
+
+  await writeAudit({
+    action: "vote.integrity_check",
+    actorId: actorUid,
+    actorRole: actorRole ?? "admin",
+    targetType: "election",
+    targetId: electionId,
+    details: {
+      issues,
+      ballotsCount,
+      tokenIndexVotedCount,
+      totalVotesCastDoc,
+    },
+  });
+
+  return ok({
+    election: {
+      electionId,
+      title: election.title ?? "",
+      status: election.status ?? "draft",
+    },
+    healthy: issues.length === 0,
+    issues,
+    stats: {
+      ballotsCount,
+      tokenIndexVotedCount,
+      totalVotesCastDoc,
+      missingBallotForTokenIndexCount,
+      missingCandidateInTokenIndexCount,
+    },
+  });
+});
+
 export const publishResults = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
