@@ -76,6 +76,13 @@ function electionStatusChipColor(status: Election["status"]): "warning" | "succe
   return "default";
 }
 
+function electionParticipationRate(election: Election): number {
+  const totalEligible = Number(election.totalEligibleVoters ?? 0);
+  const totalVotes = Number(election.totalVotesCast ?? 0);
+  if (totalEligible <= 0) return 0;
+  return (totalVotes / totalEligible) * 100;
+}
+
 function PlaceholderPage({ title, subtitle, actionLabel, loading = false }: PlaceholderPageProps) {
   return (
     <Card>
@@ -671,6 +678,23 @@ export function MemberVotePage() {
     enabled: Boolean(user && activeElectionId),
   });
 
+  const voteStatusQuery = useQuery({
+    queryKey: ["myVoteStatus", user?.uid, activeElectionId],
+    queryFn: async () => {
+      if (!activeElectionId) return null;
+      return callFunction("getMyVoteStatus", { electionId: activeElectionId }) as Promise<{
+        electionId: string;
+        hasVoted: boolean;
+        candidateId: string;
+        candidateDisplayName: string;
+        votedAtIso: string | null;
+      }>;
+    },
+    enabled: Boolean(user && activeElectionId),
+  });
+  const hasAlreadyVoted = Boolean(voteStatusQuery.data?.hasVoted);
+  const votedCandidateName = voteStatusQuery.data?.candidateDisplayName || voteStatusQuery.data?.candidateId || "candidat inconnu";
+
   const voteMutation = useMutation({
     mutationFn: async () => {
       if (!activeElectionId || !candidateToConfirm) throw new Error("Selection invalide");
@@ -680,10 +704,14 @@ export function MemberVotePage() {
       });
     },
     onSuccess: async () => {
+      const latestCandidateName = candidateToConfirm?.displayName || "";
       setError(null);
-      setFeedback("Votre vote est enregistre.");
+      setFeedback(
+        latestCandidateName ? `Votre vote est enregistre pour ${latestCandidateName}.` : "Votre vote est enregistre.",
+      );
       setCandidateToConfirm(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.memberElections });
+      await queryClient.invalidateQueries({ queryKey: ["myVoteStatus", user?.uid, activeElectionId] });
     },
     onError: (mutationError) => {
       setFeedback(null);
@@ -728,13 +756,29 @@ export function MemberVotePage() {
                     {`Cloture le ${activeElection.endAt?.toDate().toLocaleString("fr-FR")}`}
                   </Alert>
                 ) : null}
+                {voteStatusQuery.data?.hasVoted ? (
+                  <Alert severity="success">
+                    {`Vote deja enregistre pour ${votedCandidateName}${
+                      voteStatusQuery.data?.votedAtIso
+                        ? ` le ${new Date(voteStatusQuery.data.votedAtIso).toLocaleString("fr-FR")}`
+                        : ""
+                    }.`}
+                  </Alert>
+                ) : null}
                 {eligibilityQuery.data && !eligibilityQuery.data.eligible ? (
                   <Alert severity="warning">{"Vous n'etes pas eligible pour cette election."}</Alert>
                 ) : null}
-                {eligibilityQuery.data?.eligible ? (
+                {eligibilityQuery.data?.eligible && !hasAlreadyVoted ? (
                   <Box>
                     <Button variant="contained" onClick={() => setVoteFlowStarted(true)}>
                       Afficher les candidats
+                    </Button>
+                  </Box>
+                ) : null}
+                {eligibilityQuery.data?.eligible && hasAlreadyVoted ? (
+                  <Box>
+                    <Button variant="outlined" onClick={() => setVoteFlowStarted(true)}>
+                      Voir les candidats
                     </Button>
                   </Box>
                 ) : null}
@@ -751,7 +795,7 @@ export function MemberVotePage() {
           </Typography>
           {!voteFlowStarted ? (
             <Alert severity="info">
-              Selectionnez l'election puis appuyez sur "Afficher les candidats" pour commencer le vote.
+              Selectionnez l'election puis appuyez sur "Afficher les candidats" pour commencer.
             </Alert>
           ) : null}
           {candidatesQuery.isLoading ? <Skeleton height={120} /> : null}
@@ -807,16 +851,22 @@ export function MemberVotePage() {
                           </Button>
                         ) : null}
                       </Stack>
-                      <Box sx={{ alignSelf: { xs: "flex-start", md: "center" } }}>
-                        <Button
-                          variant="contained"
-                          onClick={() => setCandidateToConfirm(candidate)}
-                          disabled={!eligibilityQuery.data?.eligible}
-                        >
-                          Voter pour ce candidat
-                        </Button>
-                      </Box>
-                    </Stack>
+                        <Box sx={{ alignSelf: { xs: "flex-start", md: "center" } }}>
+                          {hasAlreadyVoted && voteStatusQuery.data?.candidateId === candidate.id ? (
+                            <Chip label="Votre vote" color="success" sx={{ mb: 1 }} />
+                          ) : null}
+                          <Button
+                            variant="contained"
+                            onClick={() => {
+                              if (hasAlreadyVoted) return;
+                              setCandidateToConfirm(candidate);
+                            }}
+                            disabled={!eligibilityQuery.data?.eligible || hasAlreadyVoted}
+                          >
+                            {hasAlreadyVoted ? "Vote deja enregistre" : "Voter pour ce candidat"}
+                          </Button>
+                        </Box>
+                      </Stack>
                   </CardContent>
                 </Card>
               ))
@@ -825,7 +875,7 @@ export function MemberVotePage() {
         </CardContent>
       </Card>
 
-      <Dialog open={Boolean(candidateToConfirm)} onClose={() => setCandidateToConfirm(null)}>
+      <Dialog open={Boolean(candidateToConfirm) && !hasAlreadyVoted} onClose={() => setCandidateToConfirm(null)}>
         <DialogTitle>Confirmer le vote</DialogTitle>
         <DialogContent>
           <Typography>
@@ -2469,6 +2519,29 @@ export function AdminElectionsPage() {
     queryFn: () => fetchCandidates(selectedElectionId),
     enabled: Boolean(selectedElectionId),
   });
+  const electionScoresQuery = useQuery({
+    queryKey: ["electionScores", selectedElectionId],
+    queryFn: () =>
+      callFunction("getElectionScores", { electionId: selectedElectionId }) as Promise<{
+        election: {
+          electionId: string;
+          title: string;
+          status: string;
+          totalEligibleVoters: number;
+          totalVotesCast: number;
+          participationRate: number;
+        };
+        scores: Array<{
+          candidateId: string;
+          displayName: string;
+          sectionName: string;
+          status: string;
+          voteCount: number;
+          percentage: number;
+        }>;
+      }>,
+    enabled: Boolean(!candidateMode && selectedElectionId),
+  });
 
   const createElectionMutation = useMutation({
     mutationFn: () =>
@@ -2540,6 +2613,7 @@ export function AdminElectionsPage() {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
       await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["electionScores", selectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2549,6 +2623,7 @@ export function AdminElectionsPage() {
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+      await queryClient.invalidateQueries({ queryKey: ["electionScores", selectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2558,6 +2633,7 @@ export function AdminElectionsPage() {
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+      await queryClient.invalidateQueries({ queryKey: ["electionScores", selectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2755,6 +2831,10 @@ export function AdminElectionsPage() {
                         </Box>
                         <Typography variant="body2">{`Ouverture: ${election.startAt?.toDate().toLocaleString("fr-FR")}`}</Typography>
                         <Typography variant="body2">{`Cloture: ${election.endAt?.toDate().toLocaleString("fr-FR")}`}</Typography>
+                        <Typography variant="body2">{`Votes: ${Number(election.totalVotesCast ?? 0)} / ${Number(
+                          election.totalEligibleVoters ?? 0,
+                        )}`}</Typography>
+                        <Typography variant="body2">{`Participation: ${electionParticipationRate(election).toFixed(2)}%`}</Typography>
                         <Stack direction="row" spacing={1} flexWrap="wrap">
                           <Button
                             size="small"
@@ -2814,13 +2894,15 @@ export function AdminElectionsPage() {
               <ResponsiveTable minWidth={1080}>
                 <Table size="small">
                   <TableHead>
-                    <TableRow>
-                      <TableCell>Titre</TableCell>
-                      <TableCell>Statut</TableCell>
-                      <TableCell>Ouverture</TableCell>
-                      <TableCell>Cloture</TableCell>
-                      <TableCell align="right">Actions</TableCell>
-                    </TableRow>
+                      <TableRow>
+                        <TableCell>Titre</TableCell>
+                        <TableCell>Statut</TableCell>
+                        <TableCell>Ouverture</TableCell>
+                        <TableCell>Cloture</TableCell>
+                        <TableCell>Votes</TableCell>
+                        <TableCell>Participation</TableCell>
+                        <TableCell align="right">Actions</TableCell>
+                      </TableRow>
                   </TableHead>
                   <TableBody>
                     {electionsQuery.data?.map((election) => (
@@ -2831,6 +2913,10 @@ export function AdminElectionsPage() {
                         </TableCell>
                         <TableCell>{election.startAt?.toDate().toLocaleString("fr-FR")}</TableCell>
                         <TableCell>{election.endAt?.toDate().toLocaleString("fr-FR")}</TableCell>
+                        <TableCell>{`${Number(election.totalVotesCast ?? 0)} / ${Number(
+                          election.totalEligibleVoters ?? 0,
+                        )}`}</TableCell>
+                        <TableCell>{`${electionParticipationRate(election).toFixed(2)}%`}</TableCell>
                         <TableCell align="right">
                           <Stack direction="row" spacing={1} justifyContent="flex-end">
                             <Button
@@ -2894,6 +2980,89 @@ export function AdminElectionsPage() {
           )}
         </CardContent>
       </Card>
+
+      {!candidateMode ? (
+        <Card>
+          <CardContent>
+            <Stack spacing={2}>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ sm: "center" }}>
+                <Typography variant="h6">Scores des votes</Typography>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => electionScoresQuery.refetch()}
+                  disabled={!selectedElectionId || electionScoresQuery.isFetching}
+                >
+                  Actualiser
+                </Button>
+              </Stack>
+
+              {!selectedElectionId ? <Alert severity="info">Selectionnez une election via "Gerer" pour voir les scores.</Alert> : null}
+              {selectedElectionId && electionScoresQuery.isLoading ? <Skeleton height={120} /> : null}
+              {selectedElectionId && electionScoresQuery.error ? (
+                <Alert severity="error">{getErrorMessage(electionScoresQuery.error)}</Alert>
+              ) : null}
+
+              {selectedElectionId && electionScoresQuery.data ? (
+                <>
+                  <Alert severity="info">
+                    {`${electionScoresQuery.data.election.title} - ${electionScoresQuery.data.election.totalVotesCast} votes / ${
+                      electionScoresQuery.data.election.totalEligibleVoters
+                    } eligibles (${electionScoresQuery.data.election.participationRate.toFixed(2)}%)`}
+                  </Alert>
+                  {electionScoresQuery.data.scores.length === 0 ? (
+                    <Alert severity="info">Aucun score disponible pour cette election.</Alert>
+                  ) : isMobile ? (
+                    <Stack spacing={1.1}>
+                      {electionScoresQuery.data.scores.map((row, index) => (
+                        <Card key={row.candidateId} variant="outlined">
+                          <CardContent>
+                            <Stack spacing={0.6}>
+                              <Typography variant="subtitle2">{row.displayName}</Typography>
+                              <Typography variant="body2">{`Section: ${row.sectionName || "-"}`}</Typography>
+                              <Typography variant="body2">{`Votes: ${row.voteCount}`}</Typography>
+                              <Typography variant="body2">{`Score: ${row.percentage.toFixed(2)}%`}</Typography>
+                              <Typography variant="body2">{`Statut candidat: ${row.status}`}</Typography>
+                              {index === 0 ? <Chip size="small" color="success" label="En tete" sx={{ alignSelf: "flex-start" }} /> : null}
+                            </Stack>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <ResponsiveTable minWidth={900}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Rang</TableCell>
+                            <TableCell>Candidat</TableCell>
+                            <TableCell>Section</TableCell>
+                            <TableCell>Statut</TableCell>
+                            <TableCell>Votes</TableCell>
+                            <TableCell>Pourcentage</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {electionScoresQuery.data.scores.map((row, index) => (
+                            <TableRow key={row.candidateId}>
+                              <TableCell>{index + 1}</TableCell>
+                              <TableCell>{row.displayName}</TableCell>
+                              <TableCell>{row.sectionName || "-"}</TableCell>
+                              <TableCell>{row.status}</TableCell>
+                              <TableCell>{row.voteCount}</TableCell>
+                              <TableCell>{`${row.percentage.toFixed(2)}%`}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </ResponsiveTable>
+                  )}
+                </>
+              ) : null}
+            </Stack>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {selectedElectionId ? (
         <Card>

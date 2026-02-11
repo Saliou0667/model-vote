@@ -1863,6 +1863,7 @@ export const castVote = onCall(async (request) => {
     if (!candidateSnap.exists || candidateSnap.data()?.status !== "validated") {
       throw new HttpsError("failed-precondition", "ERROR_CANDIDATE_NOT_FOUND");
     }
+    const candidateData = candidateSnap.data() as { displayName?: string };
 
     const tokenIndexSnap = await tx.get(tokenIndexRef);
     const existing = tokenIndexSnap.data() as { hasVoted?: boolean } | undefined;
@@ -1874,6 +1875,8 @@ export const castVote = onCall(async (request) => {
     const ballotRef = db.collection(`elections/${electionId}/ballots`).doc(voteToken);
     tx.set(tokenIndexRef, {
       voteToken,
+      candidateId,
+      candidateDisplayName: String(candidateData.displayName ?? ""),
       issuedAt: FieldValue.serverTimestamp(),
       hasVoted: true,
       votedAt: FieldValue.serverTimestamp(),
@@ -1898,6 +1901,143 @@ export const castVote = onCall(async (request) => {
   });
 
   return ok({ message: "Vote enregistre" });
+});
+
+export const getMyVoteStatus = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const electionSnap = await db.collection("elections").doc(electionId).get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+
+  const tokenIndexSnap = await db.collection(`elections/${electionId}/tokenIndex`).doc(actorUid).get();
+  if (!tokenIndexSnap.exists) {
+    return ok({
+      electionId,
+      hasVoted: false,
+      candidateId: "",
+      candidateDisplayName: "",
+      votedAtIso: null as string | null,
+    });
+  }
+
+  const tokenData = tokenIndexSnap.data() as {
+    voteToken?: string;
+    candidateId?: string;
+    candidateDisplayName?: string;
+    hasVoted?: boolean;
+    votedAt?: { toDate?: () => Date };
+  };
+
+  const hasVoted = tokenData.hasVoted === true;
+  if (!hasVoted) {
+    return ok({
+      electionId,
+      hasVoted: false,
+      candidateId: "",
+      candidateDisplayName: "",
+      votedAtIso: null as string | null,
+    });
+  }
+
+  let candidateId = String(tokenData.candidateId ?? "");
+  let candidateDisplayName = String(tokenData.candidateDisplayName ?? "");
+  if (!candidateId && tokenData.voteToken) {
+    const ballotSnap = await db.collection(`elections/${electionId}/ballots`).doc(tokenData.voteToken).get();
+    candidateId = String(ballotSnap.data()?.candidateId ?? "");
+  }
+  if (candidateId && !candidateDisplayName) {
+    const candidateSnap = await db.collection(`elections/${electionId}/candidates`).doc(candidateId).get();
+    candidateDisplayName = String(candidateSnap.data()?.displayName ?? "");
+  }
+
+  return ok({
+    electionId,
+    hasVoted: true,
+    candidateId,
+    candidateDisplayName,
+    votedAtIso: tokenData.votedAt?.toDate?.()?.toISOString?.() ?? null,
+  });
+});
+
+export const getElectionScores = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["admin", "superadmin"]);
+
+  const electionId = requireString(request.data?.electionId, "electionId");
+  const electionSnap = await db.collection("elections").doc(electionId).get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+
+  const election = electionSnap.data() as {
+    title?: string;
+    status?: string;
+    totalEligibleVoters?: number;
+    totalVotesCast?: number;
+  };
+  const candidatesSnap = await db.collection(`elections/${electionId}/candidates`).get();
+  const ballotsSnap = await db.collection(`elections/${electionId}/ballots`).get();
+
+  const candidateMap = new Map<
+    string,
+    { candidateId: string; displayName: string; status: string; sectionName: string; voteCount: number }
+  >();
+  candidatesSnap.docs.forEach((doc) => {
+    const data = doc.data() as { displayName?: string; status?: string; sectionName?: string };
+    candidateMap.set(doc.id, {
+      candidateId: doc.id,
+      displayName: String(data.displayName ?? doc.id),
+      status: String(data.status ?? "proposed"),
+      sectionName: String(data.sectionName ?? ""),
+      voteCount: 0,
+    });
+  });
+
+  ballotsSnap.docs.forEach((doc) => {
+    const candidateId = String(doc.data().candidateId ?? "");
+    if (!candidateId) return;
+    const current = candidateMap.get(candidateId);
+    if (current) {
+      current.voteCount += 1;
+      candidateMap.set(candidateId, current);
+      return;
+    }
+    candidateMap.set(candidateId, {
+      candidateId,
+      displayName: candidateId,
+      status: "validated",
+      sectionName: "",
+      voteCount: 1,
+    });
+  });
+
+  const totalVotesCast = ballotsSnap.size;
+  const totalEligible = Number(election.totalEligibleVoters ?? 0);
+  const participationRate = totalEligible > 0 ? (totalVotesCast / totalEligible) * 100 : 0;
+
+  const scores = [...candidateMap.values()]
+    .map((entry) => ({
+      ...entry,
+      percentage: totalVotesCast > 0 ? (entry.voteCount / totalVotesCast) * 100 : 0,
+    }))
+    .sort((a, b) => {
+      if (b.voteCount !== a.voteCount) return b.voteCount - a.voteCount;
+      return a.displayName.localeCompare(b.displayName, "fr-FR");
+    });
+
+  return ok({
+    election: {
+      electionId,
+      title: election.title ?? "",
+      status: election.status ?? "draft",
+      totalEligibleVoters: totalEligible,
+      totalVotesCast,
+      participationRate,
+    },
+    scores,
+  });
 });
 
 export const publishResults = onCall(async (request) => {
