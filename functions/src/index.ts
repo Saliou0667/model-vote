@@ -2064,21 +2064,35 @@ export const verifyElectionVoteIntegrity = onCall(async (request) => {
   const totalVotesCastDoc = Number(election.totalVotesCast ?? 0);
 
   const ballotTokens = new Set<string>();
+  const ballotCandidateByToken = new Map<string, string>();
   ballotsSnap.docs.forEach((doc) => {
     const token = String(doc.data().voteToken ?? doc.id);
-    if (token) ballotTokens.add(token);
+    const candidateId = String(doc.data().candidateId ?? "");
+    if (token) {
+      ballotTokens.add(token);
+      ballotCandidateByToken.set(token, candidateId);
+    }
   });
 
   let missingBallotForTokenIndexCount = 0;
   let missingCandidateInTokenIndexCount = 0;
+  let legacyCandidateMissingInTokenIndexCount = 0;
   tokenIndexSnap.docs.forEach((doc) => {
     const data = doc.data() as { voteToken?: string; candidateId?: string };
     const token = String(data.voteToken ?? "");
-    if (!token || !ballotTokens.has(token)) {
+    const candidateId = String(data.candidateId ?? "");
+    const ballotCandidateId = token ? String(ballotCandidateByToken.get(token) ?? "") : "";
+    const hasBallot = Boolean(token && ballotTokens.has(token));
+    const hasResolvableCandidate = Boolean(candidateId || ballotCandidateId);
+
+    if (!hasBallot) {
       missingBallotForTokenIndexCount += 1;
     }
-    if (!String(data.candidateId ?? "")) {
+    if (!hasResolvableCandidate) {
       missingCandidateInTokenIndexCount += 1;
+    } else if (!candidateId && hasBallot) {
+      // Backward compatibility for votes cast before candidateId denormalization in tokenIndex.
+      legacyCandidateMissingInTokenIndexCount += 1;
     }
   });
 
@@ -2107,6 +2121,7 @@ export const verifyElectionVoteIntegrity = onCall(async (request) => {
       ballotsCount,
       tokenIndexVotedCount,
       totalVotesCastDoc,
+      legacyCandidateMissingInTokenIndexCount,
     },
   });
 
@@ -2124,6 +2139,7 @@ export const verifyElectionVoteIntegrity = onCall(async (request) => {
       totalVotesCastDoc,
       missingBallotForTokenIndexCount,
       missingCandidateInTokenIndexCount,
+      legacyCandidateMissingInTokenIndexCount,
     },
   });
 });
