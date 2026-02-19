@@ -19,6 +19,9 @@ export function AppEntryRedirect() {
   const { loading, user, role, profile } = useAuth();
   if (loading) return <Loader />;
   if (!user) return <Navigate to="/auth/login" replace />;
+  if ((role === "admin" || role === "superadmin") && profile?.status !== "active") {
+    return <Navigate to="/pending-approval" replace />;
+  }
   if (role === "admin" || role === "superadmin") return <Navigate to="/admin" replace />;
   if (profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
   return <Navigate to="/member/vote" replace />;
@@ -40,17 +43,19 @@ export function RequireSignedIn({ children }: GuardProps) {
 }
 
 export function RequireAdmin({ children }: GuardProps) {
-  const { loading, user, role } = useAuth();
+  const { loading, user, role, profile } = useAuth();
   if (loading) return <Loader />;
   if (!user) return <Navigate to="/auth/login" replace />;
   if (role !== "admin" && role !== "superadmin") return <Navigate to="/member" replace />;
+  if (profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
   return <>{children}</>;
 }
 
 export function RequireSuperAdmin({ children }: GuardProps) {
-  const { loading, user, role } = useAuth();
+  const { loading, user, role, profile } = useAuth();
   if (loading) return <Loader />;
   if (!user) return <Navigate to="/auth/login" replace />;
   if (role !== "superadmin") return <Navigate to="/admin" replace />;
+  if (profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
   return <>{children}</>;
 }

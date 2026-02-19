@@ -48,10 +48,22 @@ export async function fetchSections(): Promise<Section[]> {
   return snap.docs.map((doc) => toSection(doc.id, doc.data()));
 }
 
-export async function fetchMembers(): Promise<Member[]> {
-  const q = query(collection(db, "members"), orderBy("createdAt", "desc"));
+export async function fetchMembers(options?: { includeSuperAdmins?: boolean }): Promise<Member[]> {
+  const includeSuperAdmins = options?.includeSuperAdmins === true;
+  const membersCollection = collection(db, "members");
+  const q = includeSuperAdmins
+    ? query(membersCollection, orderBy("createdAt", "desc"))
+    : query(membersCollection, where("role", "in", ["member", "admin"]));
   const snap = await getDocs(q);
-  return snap.docs.map((doc) => toMember(doc.id, doc.data()));
+  const members = snap.docs.map((doc) => toMember(doc.id, doc.data()));
+
+  // Keep a stable recent-first ordering even for filtered queries.
+  members.sort((a, b) => {
+    const aTime = a.createdAt?.toDate?.()?.getTime?.() ?? 0;
+    const bTime = b.createdAt?.toDate?.()?.getTime?.() ?? 0;
+    return bTime - aTime;
+  });
+  return members;
 }
 
 export async function fetchActiveContributionPolicy(): Promise<ContributionPolicy | null> {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
-import { FieldValue, getFirestore, type Transaction } from "firebase-admin/firestore";
+import { FieldValue, getFirestore, type Transaction, type WriteBatch } from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 
@@ -120,7 +120,16 @@ function requireDate(value: unknown, field: string): Date {
 async function getRequesterRole(uid: string): Promise<Role | null> {
   const snap = await db.collection("members").doc(uid).get();
   if (!snap.exists) return null;
-  return (snap.data()?.role as Role | undefined) ?? null;
+  const data = snap.data() as { role?: Role; status?: MemberStatus } | undefined;
+  const role = data?.role ?? null;
+  if (!role) return null;
+
+  // Suspended/pending privileged accounts must not execute admin/superadmin actions.
+  if ((role === "admin" || role === "superadmin") && data?.status !== "active") {
+    return null;
+  }
+
+  return role;
 }
 
 async function ensureUniqueMemberEmail(email: string, exceptUid?: string): Promise<void> {
@@ -138,7 +147,16 @@ function requireAnyRole(role: Role | null, allowed: Role[]) {
   }
 }
 
+function escapeCsvCell(value: string | number): string {
+  let content = String(value ?? "");
+  if (/^[=+\-@]/.test(content)) {
+    content = "'" + content;
+  }
+  return `"${content.replaceAll("\"", "\"\"")}"`;
+}
+
 async function writeAudit(payload: AuditPayload): Promise<void> {
+  if (payload.actorRole === "superadmin") return;
   await db.collection("auditLogs").add({
     ...payload,
     timestamp: FieldValue.serverTimestamp(),
@@ -146,7 +164,16 @@ async function writeAudit(payload: AuditPayload): Promise<void> {
 }
 
 function writeAuditTx(tx: Transaction, payload: AuditPayload): void {
+  if (payload.actorRole === "superadmin") return;
   tx.set(db.collection("auditLogs").doc(), {
+    ...payload,
+    timestamp: FieldValue.serverTimestamp(),
+  });
+}
+
+function writeAuditBatch(batch: WriteBatch, payload: AuditPayload): void {
+  if (payload.actorRole === "superadmin") return;
+  batch.set(db.collection("auditLogs").doc(), {
     ...payload,
     timestamp: FieldValue.serverTimestamp(),
   });
@@ -219,6 +246,27 @@ async function isContributionUpToDate(memberId: string): Promise<boolean> {
 
 function memberConditionDocId(memberId: string, conditionId: string): string {
   return `${memberId}_${conditionId}`;
+}
+
+function normalizeIdArray(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
+}
+
+async function ensureConditionIdsExist(conditionIds: string[]): Promise<void> {
+  if (conditionIds.length === 0) return;
+  const checks = await Promise.all(conditionIds.map((conditionId) => db.collection("conditions").doc(conditionId).get()));
+  if (checks.some((snap) => !snap.exists)) {
+    throw new HttpsError("not-found", "ERROR_CONDITION_NOT_FOUND");
+  }
+}
+
+async function ensureSectionIdsExist(sectionIds: string[]): Promise<void> {
+  if (sectionIds.length === 0) return;
+  const checks = await Promise.all(sectionIds.map((sectionId) => db.collection("sections").doc(sectionId).get()));
+  if (checks.some((snap) => !snap.exists)) {
+    throw new HttpsError("not-found", "ERROR_SECTION_NOT_FOUND");
+  }
 }
 
 async function getActiveConditionIds(conditionIds: string[]): Promise<string[]> {
@@ -695,9 +743,34 @@ export const createMember = onCall(async (request) => {
   } catch (error) {
     if (createdUid) {
       try {
+        await db.runTransaction(async (tx) => {
+          const memberRef = db.collection("members").doc(createdUid);
+          const memberSnap = await tx.get(memberRef);
+          if (!memberSnap.exists) return;
+
+          const memberData = memberSnap.data() as { sectionId?: string } | undefined;
+          const currentSectionId = String(memberData?.sectionId ?? "").trim();
+          tx.delete(memberRef);
+
+          if (currentSectionId) {
+            const sectionRef = db.collection("sections").doc(currentSectionId);
+            const sectionSnap = await tx.get(sectionRef);
+            if (sectionSnap.exists) {
+              tx.update(sectionRef, {
+                memberCount: FieldValue.increment(-1),
+                updatedAt: FieldValue.serverTimestamp(),
+              });
+            }
+          }
+        });
+      } catch (cleanupDbError) {
+        logger.error("cleanup createMember firestore failed", cleanupDbError);
+      }
+
+      try {
         await auth.deleteUser(createdUid);
-      } catch (cleanupError) {
-        logger.error("cleanup createMember failed", cleanupError);
+      } catch (cleanupAuthError) {
+        logger.error("cleanup createMember auth failed", cleanupAuthError);
       }
     }
 
@@ -762,7 +835,7 @@ export const updateMember = onCall(async (request) => {
       updates.status = requireEnum<MemberStatus>(updatesInput.status, "status", ["pending", "active", "suspended"]);
     }
   } else {
-    const forbidden = ["status", "role"];
+    const forbidden = ["status", "role", "sectionId"];
     if (forbidden.some((f) => updatesInput[f] !== undefined)) {
       throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED");
     }
@@ -790,6 +863,10 @@ export const updateMember = onCall(async (request) => {
       city?: string;
       phone?: string;
     };
+    if (!isSelf && previous.role === "superadmin" && actorRole !== "superadmin") {
+      throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED");
+    }
+
     const previousSectionId = String(previous.sectionId ?? "").trim();
     const hasSectionUpdate = Object.prototype.hasOwnProperty.call(updates, "sectionId");
     const nextSectionId = hasSectionUpdate ? String(updates.sectionId ?? "").trim() : previousSectionId;
@@ -892,7 +969,7 @@ export const setContributionPolicy = onCall(async (request) => {
     updatedAt: FieldValue.serverTimestamp(),
   });
 
-  batch.set(db.collection("auditLogs").doc(), {
+  writeAuditBatch(batch, {
     action: "policy.create",
     actorId: actorUid,
     actorRole: "superadmin",
@@ -904,18 +981,16 @@ export const setContributionPolicy = onCall(async (request) => {
       periodicity,
       gracePeriodDays,
     },
-    timestamp: FieldValue.serverTimestamp(),
   });
 
   if (!activePolicies.empty) {
-    batch.set(db.collection("auditLogs").doc(), {
+    writeAuditBatch(batch, {
       action: "policy.update",
       actorId: actorUid,
       actorRole: "superadmin",
       targetType: "policy",
       targetId: policyRef.id,
       details: { previousActiveCount: activePolicies.size },
-      timestamp: FieldValue.serverTimestamp(),
     });
   }
 
@@ -1340,20 +1415,21 @@ export const createElection = onCall(async (request) => {
   ]);
   const startAt = requireDate(request.data?.startAt, "startAt");
   const endAt = requireDate(request.data?.endAt, "endAt");
-  const voterConditionIds = Array.isArray(request.data?.voterConditionIds)
-    ? (request.data?.voterConditionIds as string[])
-    : [];
-  const candidateConditionIds = Array.isArray(request.data?.candidateConditionIds)
-    ? (request.data?.candidateConditionIds as string[])
-    : [];
-  const allowedSectionIds = Array.isArray(request.data?.allowedSectionIds)
-    ? (request.data?.allowedSectionIds as string[])
-    : null;
+  const voterConditionIds = normalizeIdArray(request.data?.voterConditionIds);
+  const candidateConditionIds = normalizeIdArray(request.data?.candidateConditionIds);
+  const allowedSectionIdsRaw = normalizeIdArray(request.data?.allowedSectionIds);
+  const allowedSectionIds = allowedSectionIdsRaw.length > 0 ? allowedSectionIdsRaw : null;
   const minSeniority = Number(request.data?.minSeniority ?? 0);
 
-  if (startAt.getTime() <= Date.now() || endAt.getTime() <= startAt.getTime()) {
+  // Allow "now" with a small tolerance for client/server clock skew and request latency.
+  const nowMs = Date.now();
+  const startToleranceMs = 2 * 60 * 1000;
+  if (startAt.getTime() < nowMs - startToleranceMs || endAt.getTime() <= startAt.getTime()) {
     throw new HttpsError("invalid-argument", "ERROR_INVALID_DATES");
   }
+
+  await ensureConditionIdsExist([...new Set([...voterConditionIds, ...candidateConditionIds])]);
+  await ensureSectionIdsExist(allowedSectionIdsRaw);
 
   const ref = db.collection("elections").doc();
   await ref.set({
@@ -1402,7 +1478,11 @@ export const updateElection = onCall(async (request) => {
   const electionRef = db.collection("elections").doc(electionId);
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
-  const election = electionSnap.data() as { status?: string };
+  const election = electionSnap.data() as {
+    status?: string;
+    startAt?: { toDate?: () => Date };
+    endAt?: { toDate?: () => Date };
+  };
   const status = String(election.status ?? "draft");
   if (status !== "draft" && status !== "open" && actorRole !== "superadmin") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
@@ -1416,13 +1496,14 @@ export const updateElection = onCall(async (request) => {
   if (updatesInput.startAt !== undefined) updates.startAt = requireDate(updatesInput.startAt, "startAt");
   if (updatesInput.endAt !== undefined) updates.endAt = requireDate(updatesInput.endAt, "endAt");
   if (Array.isArray(updatesInput.voterConditionIds)) {
-    updates.voterConditionIds = updatesInput.voterConditionIds as string[];
+    updates.voterConditionIds = normalizeIdArray(updatesInput.voterConditionIds);
   }
   if (Array.isArray(updatesInput.candidateConditionIds)) {
-    updates.candidateConditionIds = updatesInput.candidateConditionIds as string[];
+    updates.candidateConditionIds = normalizeIdArray(updatesInput.candidateConditionIds);
   }
   if (Array.isArray(updatesInput.allowedSectionIds)) {
-    updates.allowedSectionIds = updatesInput.allowedSectionIds as string[];
+    const normalizedAllowedSections = normalizeIdArray(updatesInput.allowedSectionIds);
+    updates.allowedSectionIds = normalizedAllowedSections.length > 0 ? normalizedAllowedSections : null;
   }
   if (typeof updatesInput.minSeniority === "number") {
     updates.minSeniority = Math.floor(updatesInput.minSeniority);
@@ -1431,12 +1512,36 @@ export const updateElection = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "Invalid updates.");
   }
 
-  if (status === "open" && actorRole !== "superadmin") {
-    const allowedInOpen = new Set(["voterConditionIds", "candidateConditionIds"]);
-    const forbidden = Object.keys(updates).filter((field) => !allowedInOpen.has(field));
-    if (forbidden.length > 0) {
-      throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
-    }
+  const currentStartAt = election.startAt?.toDate?.();
+  const currentEndAt = election.endAt?.toDate?.();
+  const nextStartAt = (updates.startAt as Date | undefined) ?? currentStartAt;
+  const nextEndAt = (updates.endAt as Date | undefined) ?? currentEndAt;
+  if (
+    !nextStartAt ||
+    Number.isNaN(nextStartAt.getTime()) ||
+    !nextEndAt ||
+    Number.isNaN(nextEndAt.getTime()) ||
+    nextEndAt.getTime() <= nextStartAt.getTime()
+  ) {
+    throw new HttpsError("invalid-argument", "ERROR_INVALID_DATES");
+  }
+
+  const nowMs = Date.now();
+  const startToleranceMs = 2 * 60 * 1000;
+  if (status === "draft" && nextStartAt.getTime() < nowMs - startToleranceMs) {
+    throw new HttpsError("invalid-argument", "ERROR_INVALID_DATES");
+  }
+  if (status === "open" && nextEndAt.getTime() <= nowMs) {
+    throw new HttpsError("invalid-argument", "ERROR_INVALID_DATES");
+  }
+
+  if (Array.isArray(updates.voterConditionIds) || Array.isArray(updates.candidateConditionIds)) {
+    const voterIds = Array.isArray(updates.voterConditionIds) ? updates.voterConditionIds : [];
+    const candidateIds = Array.isArray(updates.candidateConditionIds) ? updates.candidateConditionIds : [];
+    await ensureConditionIdsExist([...new Set([...voterIds, ...candidateIds])]);
+  }
+  if (Array.isArray(updates.allowedSectionIds)) {
+    await ensureSectionIdsExist(updates.allowedSectionIds);
   }
 
   updates.updatedAt = FieldValue.serverTimestamp();
@@ -1505,7 +1610,11 @@ export const addCandidate = onCall(async (request) => {
     firstName?: string;
     lastName?: string;
     sectionId?: string;
+    role?: Role;
   };
+  if (member.role === "superadmin") {
+    throw new HttpsError("permission-denied", "ERROR_MEMBER_NOT_ALLOWED");
+  }
   let sectionName = "";
   if (member.sectionId) {
     const sectionSnap = await db.collection("sections").doc(member.sectionId).get();
@@ -1765,14 +1874,13 @@ export const openElection = onCall(async (request) => {
     totalEligibleVoters,
     updatedAt: FieldValue.serverTimestamp(),
   });
-  batch.set(db.collection("auditLogs").doc(), {
+  writeAuditBatch(batch, {
     action: "election.open",
     actorId: actorUid,
     actorRole: actorRole ?? "admin",
     targetType: "election",
     targetId: electionId,
     details: { totalEligibleVoters },
-    timestamp: FieldValue.serverTimestamp(),
   });
 
   await batch.commit();
@@ -1789,6 +1897,10 @@ export const closeElection = onCall(async (request) => {
   const electionRef = db.collection("elections").doc(electionId);
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const election = electionSnap.data() as { status?: string };
+  if (election.status !== "open") {
+    throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_OPEN");
+  }
 
   await electionRef.update({
     status: "closed",
@@ -1850,7 +1962,12 @@ export const castVote = onCall(async (request) => {
     if (!electionSnapTx.exists) {
       throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
     }
-    const electionTx = electionSnapTx.data() as { status?: string; endAt?: { toDate?: () => Date } };
+    const electionTx = electionSnapTx.data() as {
+      status?: string;
+      endAt?: { toDate?: () => Date };
+      totalVotesCast?: number;
+      totalEligibleVoters?: number;
+    };
     if (electionTx.status !== "open") {
       throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_OPEN");
     }
@@ -1863,7 +1980,6 @@ export const castVote = onCall(async (request) => {
     if (!candidateSnap.exists || candidateSnap.data()?.status !== "validated") {
       throw new HttpsError("failed-precondition", "ERROR_CANDIDATE_NOT_FOUND");
     }
-    const candidateData = candidateSnap.data() as { displayName?: string };
 
     const tokenIndexSnap = await tx.get(tokenIndexRef);
     const existing = tokenIndexSnap.data() as { hasVoted?: boolean } | undefined;
@@ -1871,12 +1987,15 @@ export const castVote = onCall(async (request) => {
       throw new HttpsError("already-exists", "ERROR_ALREADY_VOTED");
     }
 
+    const currentTotalVotesCast = Number(electionTx.totalVotesCast ?? 0);
+    const currentTotalEligibleVoters = Number(electionTx.totalEligibleVoters ?? 0);
+    const nextTotalVotesCast = currentTotalVotesCast + 1;
+    const nextTotalEligibleVoters = Math.max(currentTotalEligibleVoters, nextTotalVotesCast);
+
     const voteToken = randomUUID();
     const ballotRef = db.collection(`elections/${electionId}/ballots`).doc(voteToken);
     tx.set(tokenIndexRef, {
       voteToken,
-      candidateId,
-      candidateDisplayName: String(candidateData.displayName ?? ""),
       issuedAt: FieldValue.serverTimestamp(),
       hasVoted: true,
       votedAt: FieldValue.serverTimestamp(),
@@ -1887,7 +2006,8 @@ export const castVote = onCall(async (request) => {
       castAt: FieldValue.serverTimestamp(),
     });
     tx.update(electionRef, {
-      totalVotesCast: FieldValue.increment(1),
+      totalVotesCast: nextTotalVotesCast,
+      totalEligibleVoters: nextTotalEligibleVoters,
       updatedAt: FieldValue.serverTimestamp(),
     });
     writeAuditTx(tx, {
@@ -2015,7 +2135,8 @@ export const getElectionScores = onCall(async (request) => {
 
   const totalVotesCast = ballotsSnap.size;
   const totalEligible = Number(election.totalEligibleVoters ?? 0);
-  const participationRate = totalEligible > 0 ? (totalVotesCast / totalEligible) * 100 : 0;
+  const participationBase = Math.max(totalEligible, totalVotesCast);
+  const participationRate = participationBase > 0 ? (totalVotesCast / participationBase) * 100 : 0;
 
   const scores = [...candidateMap.values()]
     .map((entry) => ({
@@ -2110,20 +2231,65 @@ export const verifyElectionVoteIntegrity = onCall(async (request) => {
     issues.push("missing_candidate_in_token_index");
   }
 
-  await writeAudit({
-    action: "vote.integrity_check",
-    actorId: actorUid,
-    actorRole: actorRole ?? "admin",
-    targetType: "election",
-    targetId: electionId,
-    details: {
-      issues,
-      ballotsCount,
-      tokenIndexVotedCount,
-      totalVotesCastDoc,
-      legacyCandidateMissingInTokenIndexCount,
-    },
-  });
+  if (issues.length > 0) {
+    let shouldWriteAlert = true;
+    const recentAlertsSnap = await db
+      .collection("auditLogs")
+      .where("action", "==", "vote.integrity_alert")
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
+    const latestAlertForElection = recentAlertsSnap.docs.find(
+      (doc) => String(doc.data().targetId ?? "") === electionId,
+    );
+
+    if (latestAlertForElection) {
+      const latestData = latestAlertForElection.data() as {
+        details?: Record<string, unknown>;
+        timestamp?: { toDate?: () => Date; _seconds?: number; seconds?: number };
+      };
+
+      const latestIssuesRaw = latestData.details?.issues;
+      const latestIssues = Array.isArray(latestIssuesRaw)
+        ? latestIssuesRaw.map((value) => String(value)).sort()
+        : [];
+      const currentIssues = [...issues].sort();
+      const sameIssues =
+        latestIssues.length === currentIssues.length &&
+        latestIssues.every((value, index) => value === currentIssues[index]);
+
+      let latestTimestamp: Date | null = null;
+      if (latestData.timestamp?.toDate) {
+        latestTimestamp = latestData.timestamp.toDate();
+      } else {
+        const seconds = Number(latestData.timestamp?._seconds ?? latestData.timestamp?.seconds ?? NaN);
+        if (!Number.isNaN(seconds)) {
+          latestTimestamp = new Date(seconds * 1000);
+        }
+      }
+
+      if (sameIssues && latestTimestamp && Date.now() - latestTimestamp.getTime() < 5 * 60 * 1000) {
+        shouldWriteAlert = false;
+      }
+    }
+
+    if (shouldWriteAlert) {
+      await writeAudit({
+        action: "vote.integrity_alert",
+        actorId: actorUid,
+        actorRole: actorRole ?? "admin",
+        targetType: "election",
+        targetId: electionId,
+        details: {
+          issues,
+          ballotsCount,
+          tokenIndexVotedCount,
+          totalVotesCastDoc,
+          legacyCandidateMissingInTokenIndexCount,
+        },
+      });
+    }
+  }
 
   return ok({
     election: {
@@ -2193,14 +2359,13 @@ export const publishResults = onCall(async (request) => {
     publishedAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
-  batch.set(db.collection("auditLogs").doc(), {
+  writeAuditBatch(batch, {
     action: "election.publish",
     actorId: actorUid,
     actorRole: actorRole ?? "admin",
     targetType: "election",
     targetId: electionId,
     details: { totalVotesCast: election.totalVotesCast ?? totalVotes },
-    timestamp: FieldValue.serverTimestamp(),
   });
   await batch.commit();
 
@@ -2230,7 +2395,8 @@ export const getResults = onCall(async (request) => {
   const results = resultsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
   const totalEligible = Number(election.totalEligibleVoters ?? 0);
   const totalVotesCast = Number(election.totalVotesCast ?? 0);
-  const participationRate = totalEligible > 0 ? (totalVotesCast / totalEligible) * 100 : 0;
+  const participationBase = Math.max(totalEligible, totalVotesCast);
+  const participationRate = participationBase > 0 ? (totalVotesCast / participationBase) * 100 : 0;
 
   return ok({
     election: {
@@ -2263,12 +2429,14 @@ export const exportResults = onCall(async (request) => {
     percentage: Number(doc.data().percentage ?? 0),
   }));
 
-  const rows = [
-    "rank,candidate,voteCount,percentage",
-    ...resultRows.map((row) => `${row.rank},"${row.displayName}",${row.voteCount},${row.percentage.toFixed(2)}`),
+  const csvRows: Array<Array<string | number>> = [
+    ["rank", "candidate", "voteCount", "percentage"],
+    ...resultRows.map((row) => [row.rank, row.displayName, row.voteCount, row.percentage.toFixed(2)]),
   ];
-  const csv = rows.join("\n");
-  const reportRows = rows.slice(1).map((line) => line.replaceAll(",", " | "));
+  const csv = csvRows.map((row) => row.map((cell) => escapeCsvCell(cell)).join(",")).join("\n");
+  const reportRows = resultRows.map(
+    (row) => `${row.rank} | ${row.displayName} | ${row.voteCount} | ${row.percentage.toFixed(2)}`,
+  );
   const payload = format === "csv" ? csv : `RESULTATS ELECTION\n\n${reportRows.join("\n")}`;
 
   await writeAudit({
@@ -2295,13 +2463,180 @@ export const getAuditLogs = onCall(async (request) => {
   let logsQuery = db.collection("auditLogs").orderBy("timestamp", "desc").limit(limit);
   if (actionFilter) logsQuery = logsQuery.where("action", "==", actionFilter);
   const snap = await logsQuery.get();
-  let logs: Array<{ id: string; action?: string; [key: string]: unknown }> = snap.docs.map((doc) => ({
+  let logs: Array<{
+    id: string;
+    action?: string;
+    actorId?: string;
+    actorRole?: Role | "system";
+    targetType?: AuditTarget;
+    targetId?: string;
+    [key: string]: unknown;
+  }> = snap.docs.map((doc) => ({
     id: doc.id,
     ...doc.data(),
   }));
-  if (actorRole !== "superadmin") {
-    logs = logs.filter((log) => !String(log.action ?? "").startsWith("audit."));
-  }
+
+  const memberIds = new Set<string>();
+  const electionIds = new Set<string>();
+  const candidateRefs = new Map<
+    string,
+    {
+      electionId: string;
+      candidateId: string;
+      memberId?: string;
+    }
+  >();
+  logs.forEach((log) => {
+    const logDetails =
+      typeof log.details === "object" && log.details !== null ? (log.details as Record<string, unknown>) : {};
+    const detailsElectionId = optionalString(logDetails.electionId);
+    const detailsMemberId = optionalString(logDetails.memberId);
+    const logActorId = optionalString(log.actorId);
+    if (logActorId && logActorId !== "system") memberIds.add(logActorId);
+    const logTargetId = optionalString(log.targetId);
+    if (log.targetType === "member" && logTargetId) memberIds.add(logTargetId);
+    if (detailsMemberId) memberIds.add(detailsMemberId);
+
+    if (log.targetType === "election" && logTargetId) {
+      electionIds.add(logTargetId);
+    }
+    if (detailsElectionId) {
+      electionIds.add(detailsElectionId);
+    }
+
+    if (log.targetType === "candidate" && detailsElectionId && logTargetId) {
+      candidateRefs.set(`${detailsElectionId}:${logTargetId}`, {
+        electionId: detailsElectionId,
+        candidateId: logTargetId,
+        memberId: detailsMemberId ?? undefined,
+      });
+    }
+  });
+
+  const memberLookupEntries = await Promise.all(
+    [...memberIds].map(async (memberId) => {
+      const memberSnap = await db.collection("members").doc(memberId).get();
+      if (!memberSnap.exists) return [memberId, null] as const;
+      const member = memberSnap.data() as {
+        firstName?: string;
+        lastName?: string;
+        email?: string;
+        role?: Role;
+      };
+      return [memberId, member] as const;
+    }),
+  );
+  const memberLookup = new Map(memberLookupEntries);
+
+  const electionLookupEntries = await Promise.all(
+    [...electionIds].map(async (electionId) => {
+      const electionSnap = await db.collection("elections").doc(electionId).get();
+      if (!electionSnap.exists) return [electionId, ""] as const;
+      const election = electionSnap.data() as { title?: string };
+      return [electionId, String(election.title ?? "")] as const;
+    }),
+  );
+  const electionLookup = new Map(electionLookupEntries);
+
+  const candidateLookupEntries = await Promise.all(
+    [...candidateRefs.entries()].map(async ([key, refData]) => {
+      const candidateSnap = await db
+        .collection(`elections/${refData.electionId}/candidates`)
+        .doc(refData.candidateId)
+        .get();
+      if (!candidateSnap.exists) return [key, ""] as const;
+      const candidate = candidateSnap.data() as { displayName?: string };
+      return [key, String(candidate.displayName ?? "")] as const;
+    }),
+  );
+  const candidateLookup = new Map(candidateLookupEntries);
+
+  logs = logs
+    .filter((log) => {
+      const actionName = String(log.action ?? "");
+      if (actionName === "vote.integrity_check") {
+        return false;
+      }
+      if (actorRole !== "superadmin" && String(log.action ?? "").startsWith("audit.")) {
+        return false;
+      }
+      if (log.actorRole === "superadmin") {
+        return false;
+      }
+
+      const logActorId = optionalString(log.actorId);
+      const actorMember = logActorId ? memberLookup.get(logActorId) : null;
+      if (actorMember?.role === "superadmin") {
+        return false;
+      }
+
+      const logTargetId = optionalString(log.targetId);
+      if (log.targetType === "member" && logTargetId) {
+        const targetMember = memberLookup.get(logTargetId);
+        if (targetMember?.role === "superadmin") {
+          return false;
+        }
+      }
+      return true;
+    })
+    .map((log) => {
+      const rawTimestamp = log.timestamp as
+        | string
+        | { toDate?: () => Date; _seconds?: number; seconds?: number; _nanoseconds?: number; nanoseconds?: number }
+        | undefined;
+      let timestampIso: string | null = null;
+      if (typeof rawTimestamp === "string") {
+        timestampIso = rawTimestamp;
+      } else if (rawTimestamp?.toDate) {
+        timestampIso = rawTimestamp.toDate().toISOString();
+      } else {
+        const seconds = Number(rawTimestamp?._seconds ?? rawTimestamp?.seconds ?? NaN);
+        if (!Number.isNaN(seconds)) {
+          timestampIso = new Date(seconds * 1000).toISOString();
+        }
+      }
+
+      const logActorId = optionalString(log.actorId) ?? "";
+      const actorMember = logActorId ? memberLookup.get(logActorId) : null;
+      const actorFullName = `${actorMember?.firstName ?? ""} ${actorMember?.lastName ?? ""}`.trim();
+      const actorDisplayName = actorFullName || actorMember?.email || logActorId || "-";
+
+      const logTargetId = optionalString(log.targetId) ?? "";
+      const logDetails =
+        typeof log.details === "object" && log.details !== null ? (log.details as Record<string, unknown>) : {};
+      const detailsElectionId = optionalString(logDetails.electionId) ?? "";
+      const detailsMemberId = optionalString(logDetails.memberId) ?? "";
+      let targetDisplayName = "";
+      if (log.targetType === "member" && logTargetId) {
+        const targetMember = memberLookup.get(logTargetId);
+        const targetFullName = `${targetMember?.firstName ?? ""} ${targetMember?.lastName ?? ""}`.trim();
+        targetDisplayName = targetFullName || targetMember?.email || logTargetId;
+      } else if (log.targetType === "election" && logTargetId) {
+        targetDisplayName = electionLookup.get(logTargetId) || logTargetId;
+      } else if (log.targetType === "candidate" && logTargetId) {
+        if (detailsElectionId) {
+          targetDisplayName = candidateLookup.get(`${detailsElectionId}:${logTargetId}`) || "";
+        }
+        if (!targetDisplayName && detailsMemberId) {
+          const targetMember = memberLookup.get(detailsMemberId);
+          const targetFullName = `${targetMember?.firstName ?? ""} ${targetMember?.lastName ?? ""}`.trim();
+          targetDisplayName = targetFullName || targetMember?.email || "";
+        }
+        if (!targetDisplayName) {
+          targetDisplayName = logTargetId;
+        }
+      } else if (log.targetType === "export" && logTargetId) {
+        targetDisplayName = electionLookup.get(logTargetId) || logTargetId;
+      }
+
+      return {
+        ...log,
+        timestampIso,
+        actorDisplayName,
+        actorEmail: actorMember?.email ?? "",
+        targetDisplayName,
+      };
+    });
 
   return ok({ logs, total: logs.length });
 });

@@ -28,7 +28,7 @@ import {
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { callFunction, getErrorMessage } from "../api/callables";
 import {
@@ -640,8 +640,8 @@ export function MemberVotePage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [selectedElectionId, setSelectedElectionId] = useState("");
-  const [voteFlowStarted, setVoteFlowStarted] = useState(false);
-  const [candidateToConfirm, setCandidateToConfirm] = useState<Candidate | null>(null);
+  const [voteFlowStartedByElectionId, setVoteFlowStartedByElectionId] = useState<Record<string, boolean>>({});
+  const [candidateToConfirmByElectionId, setCandidateToConfirmByElectionId] = useState<Record<string, Candidate | null>>({});
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -655,10 +655,8 @@ export function MemberVotePage() {
   );
   const activeElectionId = selectedElectionId || openElections[0]?.id || "";
   const activeElection = openElections.find((election) => election.id === activeElectionId) ?? null;
-  useEffect(() => {
-    setVoteFlowStarted(false);
-    setCandidateToConfirm(null);
-  }, [activeElectionId]);
+  const voteFlowStarted = Boolean(voteFlowStartedByElectionId[activeElectionId]);
+  const candidateToConfirm = candidateToConfirmByElectionId[activeElectionId] ?? null;
 
   const candidatesQuery = useQuery({
     queryKey: ["candidates", activeElectionId],
@@ -709,7 +707,7 @@ export function MemberVotePage() {
       setFeedback(
         latestCandidateName ? `Votre vote est enregistre pour ${latestCandidateName}.` : "Votre vote est enregistre.",
       );
-      setCandidateToConfirm(null);
+      setCandidateToConfirmByElectionId((previous) => ({ ...previous, [activeElectionId]: null }));
       await queryClient.invalidateQueries({ queryKey: queryKeys.memberElections });
       await queryClient.invalidateQueries({ queryKey: ["myVoteStatus", user?.uid, activeElectionId] });
     },
@@ -742,6 +740,8 @@ export function MemberVotePage() {
                     value={activeElectionId}
                     onChange={(event) => {
                       setSelectedElectionId(event.target.value);
+                      setError(null);
+                      setFeedback(null);
                     }}
                   >
                     {openElections.map((election) => (
@@ -770,14 +770,24 @@ export function MemberVotePage() {
                 ) : null}
                 {eligibilityQuery.data?.eligible && !hasAlreadyVoted ? (
                   <Box>
-                    <Button variant="contained" onClick={() => setVoteFlowStarted(true)}>
+                    <Button
+                      variant="contained"
+                      onClick={() =>
+                        setVoteFlowStartedByElectionId((previous) => ({ ...previous, [activeElectionId]: true }))
+                      }
+                    >
                       Afficher les candidats
                     </Button>
                   </Box>
                 ) : null}
                 {eligibilityQuery.data?.eligible && hasAlreadyVoted ? (
                   <Box>
-                    <Button variant="outlined" onClick={() => setVoteFlowStarted(true)}>
+                    <Button
+                      variant="outlined"
+                      onClick={() =>
+                        setVoteFlowStartedByElectionId((previous) => ({ ...previous, [activeElectionId]: true }))
+                      }
+                    >
                       Voir les candidats
                     </Button>
                   </Box>
@@ -851,20 +861,26 @@ export function MemberVotePage() {
                           </Button>
                         ) : null}
                       </Stack>
-                        <Box sx={{ alignSelf: { xs: "flex-start", md: "center" } }}>
-                          {hasAlreadyVoted && voteStatusQuery.data?.candidateId === candidate.id ? (
-                            <Chip label="Votre vote" color="success" sx={{ mb: 1 }} />
-                          ) : null}
-                          <Button
-                            variant="contained"
-                            onClick={() => {
-                              if (hasAlreadyVoted) return;
-                              setCandidateToConfirm(candidate);
-                            }}
-                            disabled={!eligibilityQuery.data?.eligible || hasAlreadyVoted}
-                          >
-                            {hasAlreadyVoted ? "Vote deja enregistre" : "Voter pour ce candidat"}
-                          </Button>
+                        <Box sx={{ alignSelf: { xs: "stretch", md: "center" }, width: { xs: "100%", md: "auto" } }}>
+                          <Stack spacing={1} alignItems={{ xs: "flex-start", md: "flex-end" }}>
+                            {hasAlreadyVoted && voteStatusQuery.data?.candidateId === candidate.id ? (
+                              <Chip label="Votre vote" color="success" />
+                            ) : null}
+                            <Button
+                              variant="contained"
+                              onClick={() => {
+                                if (hasAlreadyVoted) return;
+                                setCandidateToConfirmByElectionId((previous) => ({
+                                  ...previous,
+                                  [activeElectionId]: candidate,
+                                }));
+                              }}
+                              disabled={!eligibilityQuery.data?.eligible || hasAlreadyVoted}
+                              sx={{ width: { xs: "100%", sm: "auto" } }}
+                            >
+                              {hasAlreadyVoted ? "Vote deja enregistre" : "Voter pour ce candidat"}
+                            </Button>
+                          </Stack>
                         </Box>
                       </Stack>
                   </CardContent>
@@ -875,7 +891,10 @@ export function MemberVotePage() {
         </CardContent>
       </Card>
 
-      <Dialog open={Boolean(candidateToConfirm) && !hasAlreadyVoted} onClose={() => setCandidateToConfirm(null)}>
+      <Dialog
+        open={Boolean(candidateToConfirm) && !hasAlreadyVoted}
+        onClose={() => setCandidateToConfirmByElectionId((previous) => ({ ...previous, [activeElectionId]: null }))}
+      >
         <DialogTitle>Confirmer le vote</DialogTitle>
         <DialogContent>
           <Typography>
@@ -883,7 +902,9 @@ export function MemberVotePage() {
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setCandidateToConfirm(null)}>Annuler</Button>
+          <Button onClick={() => setCandidateToConfirmByElectionId((previous) => ({ ...previous, [activeElectionId]: null }))}>
+            Annuler
+          </Button>
           <Button variant="contained" onClick={() => voteMutation.mutate()} disabled={voteMutation.isPending}>
             Confirmer
           </Button>
@@ -1013,8 +1034,8 @@ export function AdminDashboardPage() {
     queryFn: fetchSections,
   });
   const membersQuery = useQuery({
-    queryKey: queryKeys.members,
-    queryFn: fetchMembers,
+    queryKey: [...queryKeys.members, role],
+    queryFn: () => fetchMembers({ includeSuperAdmins: role === "superadmin" }),
   });
   const visibleMembersCount = useMemo(() => {
     const members = membersQuery.data ?? [];
@@ -1271,7 +1292,11 @@ export function AdminMembersPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
-  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const { role } = useAuth();
+  const membersQuery = useQuery({
+    queryKey: [...queryKeys.members, role],
+    queryFn: () => fetchMembers({ includeSuperAdmins: role === "superadmin" }),
+  });
   const sectionsQuery = useQuery({ queryKey: queryKeys.sections, queryFn: fetchSections });
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -1766,7 +1791,10 @@ export function AdminConditionsPage() {
     queryKey: queryKeys.conditions,
     queryFn: fetchConditions,
   });
-  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const membersQuery = useQuery({
+    queryKey: [...queryKeys.members, role],
+    queryFn: () => fetchMembers({ includeSuperAdmins: role === "superadmin" }),
+  });
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -2162,7 +2190,10 @@ export function AdminContributionsPage() {
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const { role } = useAuth();
   const queryClient = useQueryClient();
-  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const membersQuery = useQuery({
+    queryKey: [...queryKeys.members, role],
+    queryFn: () => fetchMembers({ includeSuperAdmins: role === "superadmin" }),
+  });
   const policyQuery = useQuery({
     queryKey: queryKeys.policy,
     queryFn: fetchActiveContributionPolicy,
@@ -2463,7 +2494,10 @@ export function AdminElectionsPage() {
     queryFn: fetchElections,
     refetchInterval: candidateMode ? false : 5000,
   });
-  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const membersQuery = useQuery({
+    queryKey: [...queryKeys.members, role],
+    queryFn: () => fetchMembers({ includeSuperAdmins: role === "superadmin" }),
+  });
   const conditionsQuery = useQuery({
     queryKey: queryKeys.conditions,
     queryFn: fetchConditions,
@@ -2482,8 +2516,12 @@ export function AdminElectionsPage() {
   const [candidateConditionIds, setCandidateConditionIds] = useState<string[]>([]);
 
   const [selectedElectionId, setSelectedElectionId] = useState("");
-  const [managedVoterConditionIds, setManagedVoterConditionIds] = useState<string[]>([]);
-  const [managedCandidateConditionIds, setManagedCandidateConditionIds] = useState<string[]>([]);
+  const [managedVoterConditionIdsByElectionId, setManagedVoterConditionIdsByElectionId] = useState<
+    Record<string, string[]>
+  >({});
+  const [managedCandidateConditionIdsByElectionId, setManagedCandidateConditionIdsByElectionId] = useState<
+    Record<string, string[]>
+  >({});
   const [candidateMemberId, setCandidateMemberId] = useState("");
   const [candidateBio, setCandidateBio] = useState("");
   const [candidateProjectSummary, setCandidateProjectSummary] = useState("");
@@ -2492,27 +2530,27 @@ export function AdminElectionsPage() {
   const [exportContent, setExportContent] = useState("");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
 
-  const selectedElection = useMemo(
-    () => (electionsQuery.data ?? []).find((election) => election.id === selectedElectionId) ?? null,
-    [electionsQuery.data, selectedElectionId],
-  );
-  useEffect(() => {
-    if (!candidateMode) return;
-    if (selectedElectionId) return;
-    const first = electionsQuery.data?.[0];
-    if (!first) return;
-    setSelectedElectionId(first.id);
-    setManagedVoterConditionIds(first.voterConditionIds ?? []);
-    setManagedCandidateConditionIds(first.candidateConditionIds ?? []);
-  }, [candidateMode, electionsQuery.data, selectedElectionId]);
-  useEffect(() => {
-    if (candidateMode) return;
-    if (selectedElectionId) return;
+  const fallbackSelectedElectionId = useMemo(() => {
+    if (candidateMode) {
+      return electionsQuery.data?.[0]?.id ?? "";
+    }
     const openFirst = (electionsQuery.data ?? []).find((election) => election.status === "open");
-    const fallback = openFirst ?? electionsQuery.data?.[0];
-    if (!fallback) return;
-    setSelectedElectionId(fallback.id);
-  }, [candidateMode, electionsQuery.data, selectedElectionId]);
+    return openFirst?.id ?? electionsQuery.data?.[0]?.id ?? "";
+  }, [candidateMode, electionsQuery.data]);
+  const activeSelectedElectionId = selectedElectionId || fallbackSelectedElectionId;
+  const selectedElection = useMemo(
+    () => (electionsQuery.data ?? []).find((election) => election.id === activeSelectedElectionId) ?? null,
+    [electionsQuery.data, activeSelectedElectionId],
+  );
+  const managedVoterConditionIds = useMemo(
+    () => managedVoterConditionIdsByElectionId[activeSelectedElectionId] ?? selectedElection?.voterConditionIds ?? [],
+    [activeSelectedElectionId, managedVoterConditionIdsByElectionId, selectedElection?.voterConditionIds],
+  );
+  const managedCandidateConditionIds = useMemo(
+    () =>
+      managedCandidateConditionIdsByElectionId[activeSelectedElectionId] ?? selectedElection?.candidateConditionIds ?? [],
+    [activeSelectedElectionId, managedCandidateConditionIdsByElectionId, selectedElection?.candidateConditionIds],
+  );
   const canEditSelectedElectionConditions = Boolean(
     selectedElection &&
       (role === "superadmin" || selectedElection.status === "draft" || selectedElection.status === "open"),
@@ -2527,14 +2565,14 @@ export function AdminElectionsPage() {
   );
 
   const candidatesQuery = useQuery({
-    queryKey: ["candidates", selectedElectionId],
-    queryFn: () => fetchCandidates(selectedElectionId),
-    enabled: Boolean(selectedElectionId),
+    queryKey: ["candidates", activeSelectedElectionId],
+    queryFn: () => fetchCandidates(activeSelectedElectionId),
+    enabled: Boolean(activeSelectedElectionId),
   });
   const electionScoresQuery = useQuery({
-    queryKey: ["electionScores", selectedElectionId],
+    queryKey: ["electionScores", activeSelectedElectionId],
     queryFn: () =>
-      callFunction("getElectionScores", { electionId: selectedElectionId }) as Promise<{
+      callFunction("getElectionScores", { electionId: activeSelectedElectionId }) as Promise<{
         election: {
           electionId: string;
           title: string;
@@ -2552,16 +2590,16 @@ export function AdminElectionsPage() {
           percentage: number;
         }>;
       }>,
-    enabled: Boolean(!candidateMode && selectedElectionId),
+    enabled: Boolean(!candidateMode && activeSelectedElectionId),
     refetchInterval: ({ state }) => {
       const status = (state.data as { election?: { status?: string } } | undefined)?.election?.status;
       return status === "open" ? 5000 : false;
     },
   });
   const electionIntegrityQuery = useQuery({
-    queryKey: ["electionIntegrity", selectedElectionId],
+    queryKey: ["electionIntegrity", activeSelectedElectionId],
     queryFn: () =>
-      callFunction("verifyElectionVoteIntegrity", { electionId: selectedElectionId }) as Promise<{
+      callFunction("verifyElectionVoteIntegrity", { electionId: activeSelectedElectionId }) as Promise<{
         election: { electionId: string; title: string; status: string };
         healthy: boolean;
         issues: string[];
@@ -2573,7 +2611,7 @@ export function AdminElectionsPage() {
           missingCandidateInTokenIndexCount: number;
         };
       }>,
-    enabled: Boolean(!candidateMode && selectedElectionId),
+    enabled: Boolean(!candidateMode && activeSelectedElectionId),
     refetchInterval: selectedElection?.status === "open" ? 15000 : false,
   });
 
@@ -2605,7 +2643,7 @@ export function AdminElectionsPage() {
   const addCandidateMutation = useMutation({
     mutationFn: () =>
       callFunction("addCandidate", {
-        electionId: selectedElectionId,
+        electionId: activeSelectedElectionId,
         memberId: candidateMemberId,
         bio: candidateBio,
         projectSummary: candidateProjectSummary,
@@ -2619,7 +2657,7 @@ export function AdminElectionsPage() {
       setCandidateProjectSummary("");
       setCandidateVideoUrl("");
       setCandidatePhotoUrl("");
-      await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["candidates", activeSelectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2627,7 +2665,7 @@ export function AdminElectionsPage() {
   const updateElectionConditionsMutation = useMutation({
     mutationFn: () =>
       callFunction("updateElection", {
-        electionId: selectedElectionId,
+        electionId: activeSelectedElectionId,
         updates: {
           voterConditionIds: managedVoterConditionIds,
           candidateConditionIds: managedCandidateConditionIds,
@@ -2646,8 +2684,8 @@ export function AdminElectionsPage() {
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
-      await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
-      await queryClient.invalidateQueries({ queryKey: ["electionScores", selectedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["candidates", activeSelectedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["electionScores", activeSelectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2657,7 +2695,7 @@ export function AdminElectionsPage() {
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
-      await queryClient.invalidateQueries({ queryKey: ["electionScores", selectedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["electionScores", activeSelectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2667,7 +2705,7 @@ export function AdminElectionsPage() {
     onSuccess: async () => {
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
-      await queryClient.invalidateQueries({ queryKey: ["electionScores", selectedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["electionScores", activeSelectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2698,7 +2736,7 @@ export function AdminElectionsPage() {
     }) => callFunction("validateCandidate", { electionId, candidateId, status }),
     onSuccess: async () => {
       setError(null);
-      await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["candidates", activeSelectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2708,7 +2746,7 @@ export function AdminElectionsPage() {
       callFunction("removeCandidate", { electionId, candidateId }),
     onSuccess: async () => {
       setError(null);
-      await queryClient.invalidateQueries({ queryKey: ["candidates", selectedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["candidates", activeSelectedElectionId] });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2884,8 +2922,14 @@ export function AdminElectionsPage() {
                             variant="outlined"
                             onClick={() => {
                               setSelectedElectionId(election.id);
-                              setManagedVoterConditionIds(election.voterConditionIds ?? []);
-                              setManagedCandidateConditionIds(election.candidateConditionIds ?? []);
+                              setManagedVoterConditionIdsByElectionId((previous) => ({
+                                ...previous,
+                                [election.id]: election.voterConditionIds ?? [],
+                              }));
+                              setManagedCandidateConditionIdsByElectionId((previous) => ({
+                                ...previous,
+                                [election.id]: election.candidateConditionIds ?? [],
+                              }));
                             }}
                           >
                             Gerer
@@ -2949,7 +2993,7 @@ export function AdminElectionsPage() {
                   </TableHead>
                   <TableBody>
                     {electionsQuery.data?.map((election) => (
-                      <TableRow key={election.id} selected={selectedElectionId === election.id}>
+                      <TableRow key={election.id} selected={activeSelectedElectionId === election.id}>
                         <TableCell>{election.title}</TableCell>
                         <TableCell>
                           <Chip size="small" color={electionStatusChipColor(election.status)} label={election.status} />
@@ -2976,8 +3020,14 @@ export function AdminElectionsPage() {
                               variant="outlined"
                               onClick={() => {
                                 setSelectedElectionId(election.id);
-                                setManagedVoterConditionIds(election.voterConditionIds ?? []);
-                                setManagedCandidateConditionIds(election.candidateConditionIds ?? []);
+                                setManagedVoterConditionIdsByElectionId((previous) => ({
+                                  ...previous,
+                                  [election.id]: election.voterConditionIds ?? [],
+                                }));
+                                setManagedCandidateConditionIdsByElectionId((previous) => ({
+                                  ...previous,
+                                  [election.id]: election.candidateConditionIds ?? [],
+                                }));
                               }}
                             >
                               Gerer
@@ -3040,35 +3090,37 @@ export function AdminElectionsPage() {
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ sm: "center" }}>
                 <Typography variant="h6">Scores des votes</Typography>
                 <Stack direction="row" spacing={1}>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    onClick={() => electionScoresQuery.refetch()}
-                    disabled={!selectedElectionId || electionScoresQuery.isFetching}
-                  >
-                    Actualiser scores
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    color="secondary"
-                    onClick={() => electionIntegrityQuery.refetch()}
-                    disabled={!selectedElectionId || electionIntegrityQuery.isFetching}
-                  >
-                    Verifier l'integrite
-                  </Button>
-                </Stack>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => electionScoresQuery.refetch()}
+                      disabled={!activeSelectedElectionId || electionScoresQuery.isFetching}
+                    >
+                      Actualiser scores
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="secondary"
+                      onClick={() => electionIntegrityQuery.refetch()}
+                      disabled={!activeSelectedElectionId || electionIntegrityQuery.isFetching}
+                    >
+                      Verifier l'integrite
+                    </Button>
+                  </Stack>
               </Stack>
 
-              {!selectedElectionId ? <Alert severity="info">Selectionnez une election via "Gerer" pour voir les scores.</Alert> : null}
-              {selectedElectionId && electionScoresQuery.isLoading ? <Skeleton height={120} /> : null}
-              {selectedElectionId && electionScoresQuery.error ? (
+              {!activeSelectedElectionId ? (
+                <Alert severity="info">Selectionnez une election via "Gerer" pour voir les scores.</Alert>
+              ) : null}
+              {activeSelectedElectionId && electionScoresQuery.isLoading ? <Skeleton height={120} /> : null}
+              {activeSelectedElectionId && electionScoresQuery.error ? (
                 <Alert severity="error">{getErrorMessage(electionScoresQuery.error)}</Alert>
               ) : null}
-              {selectedElectionId && electionIntegrityQuery.error ? (
+              {activeSelectedElectionId && electionIntegrityQuery.error ? (
                 <Alert severity="error">{getErrorMessage(electionIntegrityQuery.error)}</Alert>
               ) : null}
-              {selectedElectionId && electionIntegrityQuery.data ? (
+              {activeSelectedElectionId && electionIntegrityQuery.data ? (
                 <Alert severity={electionIntegrityQuery.data.healthy ? "success" : "error"}>
                   {electionIntegrityQuery.data.healthy
                     ? `Integrite OK: ${electionIntegrityQuery.data.stats.ballotsCount} bulletins, ${electionIntegrityQuery.data.stats.tokenIndexVotedCount} index votants, totalVotesCast=${electionIntegrityQuery.data.stats.totalVotesCastDoc}.`
@@ -3076,7 +3128,7 @@ export function AdminElectionsPage() {
                 </Alert>
               ) : null}
 
-              {selectedElectionId && electionScoresQuery.data ? (
+              {activeSelectedElectionId && electionScoresQuery.data ? (
                 <>
                   <Alert severity="info">
                     {`${electionScoresQuery.data.election.title} - ${electionScoresQuery.data.election.totalVotesCast} votes / ${
@@ -3137,7 +3189,7 @@ export function AdminElectionsPage() {
         </Card>
       ) : null}
 
-      {selectedElectionId ? (
+      {activeSelectedElectionId ? (
         <Card>
           <CardContent>
             <Stack spacing={2}>
@@ -3159,9 +3211,11 @@ export function AdminElectionsPage() {
                     multiple
                     value={managedVoterConditionIds}
                     onChange={(event) =>
-                      setManagedVoterConditionIds(
-                        typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
-                      )
+                      setManagedVoterConditionIdsByElectionId((previous) => ({
+                        ...previous,
+                        [activeSelectedElectionId]:
+                          typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                      }))
                     }
                     disabled={!canEditSelectedElectionConditions || updateElectionConditionsMutation.isPending}
                   >
@@ -3180,9 +3234,11 @@ export function AdminElectionsPage() {
                     multiple
                     value={managedCandidateConditionIds}
                     onChange={(event) =>
-                      setManagedCandidateConditionIds(
-                        typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
-                      )
+                      setManagedCandidateConditionIdsByElectionId((previous) => ({
+                        ...previous,
+                        [activeSelectedElectionId]:
+                          typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value,
+                      }))
                     }
                     disabled={!canEditSelectedElectionConditions || updateElectionConditionsMutation.isPending}
                   >
@@ -3289,7 +3345,7 @@ export function AdminElectionsPage() {
                                 variant="outlined"
                                 onClick={() =>
                                   validateCandidateMutation.mutate({
-                                    electionId: selectedElectionId,
+                                    electionId: activeSelectedElectionId,
                                     candidateId: candidate.id,
                                     status: "validated",
                                   })
@@ -3304,7 +3360,7 @@ export function AdminElectionsPage() {
                                 variant="outlined"
                                 onClick={() =>
                                   validateCandidateMutation.mutate({
-                                    electionId: selectedElectionId,
+                                    electionId: activeSelectedElectionId,
                                     candidateId: candidate.id,
                                     status: "rejected",
                                   })
@@ -3319,7 +3375,7 @@ export function AdminElectionsPage() {
                                 variant="outlined"
                                 onClick={() =>
                                   removeCandidateMutation.mutate({
-                                    electionId: selectedElectionId,
+                                    electionId: activeSelectedElectionId,
                                     candidateId: candidate.id,
                                   })
                                 }
@@ -3379,7 +3435,7 @@ export function AdminElectionsPage() {
                                 variant="outlined"
                                 onClick={() =>
                                   validateCandidateMutation.mutate({
-                                    electionId: selectedElectionId,
+                                    electionId: activeSelectedElectionId,
                                     candidateId: candidate.id,
                                     status: "validated",
                                   })
@@ -3394,7 +3450,7 @@ export function AdminElectionsPage() {
                                 variant="outlined"
                                 onClick={() =>
                                   validateCandidateMutation.mutate({
-                                    electionId: selectedElectionId,
+                                    electionId: activeSelectedElectionId,
                                     candidateId: candidate.id,
                                     status: "rejected",
                                   })
@@ -3409,7 +3465,7 @@ export function AdminElectionsPage() {
                                 variant="outlined"
                                 onClick={() =>
                                   removeCandidateMutation.mutate({
-                                    electionId: selectedElectionId,
+                                    electionId: activeSelectedElectionId,
                                     candidateId: candidate.id,
                                   })
                                 }
@@ -3464,6 +3520,110 @@ export function AdminLogsPage() {
         limit: 200,
       }) as Promise<{ logs: Array<Record<string, unknown>>; total: number }>,
   });
+  const formatLogTimestamp = (log: Record<string, unknown>) => {
+    const rawIso = typeof log.timestampIso === "string" ? log.timestampIso : "";
+    if (rawIso) {
+      const parsed = new Date(rawIso);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toLocaleString("fr-FR", {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        });
+      }
+    }
+
+    const rawTimestamp = log.timestamp as
+      | { toDate?: () => Date; _seconds?: number; seconds?: number }
+      | undefined;
+    let parsed: Date | null = null;
+    if (rawTimestamp?.toDate) {
+      parsed = rawTimestamp.toDate();
+    } else {
+      const seconds = Number(rawTimestamp?._seconds ?? rawTimestamp?.seconds ?? NaN);
+      if (!Number.isNaN(seconds)) {
+        parsed = new Date(seconds * 1000);
+      }
+    }
+    if (!parsed || Number.isNaN(parsed.getTime())) return "-";
+    return parsed.toLocaleString("fr-FR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+  };
+  const formatActionLabel = (log: Record<string, unknown>) => {
+    const action = String(log.action ?? "");
+    const targetName = String(log.targetDisplayName ?? "").trim();
+    const labels: Record<string, string> = {
+      "member.create": "Inscription d'un membre",
+      "member.update": "Mise a jour d'un membre",
+      "member.password_change": "Changement du mot de passe",
+      "member.role_change": "Modification du role d'un membre",
+      "section.create": "Creation d'une section",
+      "section.update": "Mise a jour d'une section",
+      "section.delete": "Suppression d'une section",
+      "condition.create": "Creation d'une condition",
+      "condition.update": "Mise a jour d'une condition",
+      "condition.delete": "Suppression d'une condition",
+      "condition.validate": "Validation d'une condition membre",
+      "condition.invalidate": "Invalidation d'une condition membre",
+      "policy.create": "Creation de la politique de cotisation",
+      "policy.update": "Mise a jour de la politique de cotisation",
+      "payment.record": "Enregistrement d'un paiement",
+      "election.create": "Creation d'une election",
+      "election.update": "Mise a jour d'une election",
+      "election.open": "Ouverture d'une election",
+      "election.close": "Fermeture d'une election",
+      "election.publish": "Publication des resultats",
+      "candidate.add": "Ajout d'un candidat",
+      "candidate.validate": "Validation d'un candidat",
+      "candidate.reject": "Rejet d'un candidat",
+      "candidate.remove": "Retrait d'un candidat",
+      "vote.cast": "Vote enregistre (choix secret)",
+      "vote.integrity_alert": "Alerte integrite des votes",
+      "export.generate": "Generation d'un export",
+    };
+    const base = labels[action] ?? action;
+    const shouldAppendTarget =
+      action.startsWith("candidate.") ||
+      action.startsWith("election.") ||
+      action === "member.create" ||
+      action === "member.update" ||
+      action === "vote.cast" ||
+      action === "export.generate";
+    if (shouldAppendTarget && targetName) {
+      return `${base}: ${targetName}`;
+    }
+    return base;
+  };
+  const formatTargetLabel = (log: Record<string, unknown>) => {
+    const targetType = String(log.targetType ?? "");
+    const targetValue = String(log.targetDisplayName || log.targetId || "");
+    const typeLabel: Record<string, string> = {
+      member: "Membre",
+      election: "Election",
+      section: "Section",
+      condition: "Condition",
+      candidate: "Candidat",
+      payment: "Paiement",
+      policy: "Politique",
+      export: "Export",
+      audit: "Audit",
+    };
+    const left = typeLabel[targetType] ?? targetType;
+    if (!left && !targetValue) return "-";
+    if (left && targetValue) return `${left}: ${targetValue}`;
+    return targetValue || left || "-";
+  };
 
   return (
     <Stack spacing={2}>
@@ -3490,16 +3650,19 @@ export function AdminLogsPage() {
             isMobile ? (
               <Stack spacing={1.2}>
                 {logsQuery.data?.logs.map((log, index) => {
-                  const timestamp = (log.timestamp as { toDate?: () => Date } | undefined)?.toDate?.();
                   const key = String(log.id ?? `${String(log.action ?? "log")}-${index}`);
+                  const actorLabel = String(log.actorDisplayName ?? log.actorId ?? "-");
+                  const actionLabel = formatActionLabel(log);
+                  const targetLabel = formatTargetLabel(log);
+                  const timestampLabel = formatLogTimestamp(log);
                   return (
                     <Card key={key} variant="outlined">
                       <CardContent>
                         <Stack spacing={0.5}>
-                          <Typography variant="body2">{`Date: ${timestamp ? timestamp.toLocaleString("fr-FR") : "-"}`}</Typography>
-                          <Typography variant="body2">{`Action: ${String(log.action ?? "-")}`}</Typography>
-                          <Typography variant="body2">{`Acteur: ${String(log.actorId ?? "-")}`}</Typography>
-                          <Typography variant="body2">{`Cible: ${String(log.targetType ?? "")}:${String(log.targetId ?? "")}`}</Typography>
+                          <Typography variant="body2">{`Date: ${timestampLabel}`}</Typography>
+                          <Typography variant="body2">{`Action: ${actionLabel}`}</Typography>
+                          <Typography variant="body2">{`Acteur: ${actorLabel}`}</Typography>
+                          <Typography variant="body2">{`Cible: ${targetLabel}`}</Typography>
                         </Stack>
                       </CardContent>
                     </Card>
@@ -3519,14 +3682,17 @@ export function AdminLogsPage() {
                   </TableHead>
                   <TableBody>
                     {logsQuery.data?.logs.map((log, index) => {
-                      const timestamp = (log.timestamp as { toDate?: () => Date } | undefined)?.toDate?.();
                       const key = String(log.id ?? `${String(log.action ?? "log")}-${index}`);
+                      const timestampLabel = formatLogTimestamp(log);
+                      const actionLabel = formatActionLabel(log);
+                      const actorLabel = String(log.actorDisplayName ?? log.actorId ?? "-");
+                      const targetLabel = formatTargetLabel(log);
                       return (
                         <TableRow key={key}>
-                          <TableCell>{timestamp ? timestamp.toLocaleString("fr-FR") : "-"}</TableCell>
-                          <TableCell>{String(log.action ?? "-")}</TableCell>
-                          <TableCell>{String(log.actorId ?? "-")}</TableCell>
-                          <TableCell>{`${String(log.targetType ?? "")}:${String(log.targetId ?? "")}`}</TableCell>
+                          <TableCell>{timestampLabel}</TableCell>
+                          <TableCell>{actionLabel}</TableCell>
+                          <TableCell>{actorLabel}</TableCell>
+                          <TableCell>{targetLabel}</TableCell>
                         </TableRow>
                       );
                     })}
@@ -3548,7 +3714,10 @@ export function SuperAdminAdminsPage() {
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const { role } = useAuth();
   const queryClient = useQueryClient();
-  const membersQuery = useQuery({ queryKey: queryKeys.members, queryFn: fetchMembers });
+  const membersQuery = useQuery({
+    queryKey: [...queryKeys.members, role],
+    queryFn: () => fetchMembers({ includeSuperAdmins: role === "superadmin" }),
+  });
   const [error, setError] = useState<string | null>(null);
   const [pendingRoles, setPendingRoles] = useState<Record<string, Member["role"]>>({});
   const canAssignSuperAdmin = role === "superadmin";

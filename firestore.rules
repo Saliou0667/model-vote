@@ -15,8 +15,18 @@ service cloud.firestore {
         : null;
     }
 
+    function memberStatus() {
+      return hasUserDoc()
+        ? get(/databases/$(database)/documents/members/$(request.auth.uid)).data.status
+        : null;
+    }
+
     function isAdmin() {
-      return isAuth() && role() in ["admin", "superadmin"];
+      return isAuth() && role() in ["admin", "superadmin"] && memberStatus() == "active";
+    }
+
+    function isSuperAdmin() {
+      return isAuth() && role() == "superadmin" && memberStatus() == "active";
     }
 
     function isOwner(uid) {
@@ -24,7 +34,7 @@ service cloud.firestore {
     }
 
     match /members/{memberId} {
-      allow read: if isOwner(memberId) || isAdmin();
+      allow read: if isOwner(memberId) || isSuperAdmin() || (isAdmin() && resource.data.role != "superadmin");
       allow write: if false;
     }
 
