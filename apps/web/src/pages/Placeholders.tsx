@@ -27,7 +27,7 @@ import {
   useMediaQuery,
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { callFunction, getErrorMessage } from "../api/callables";
@@ -81,6 +81,17 @@ function electionParticipationRate(election: Election): number {
   const totalVotes = Number(election.totalVotesCast ?? 0);
   if (totalEligible <= 0) return 0;
   return (totalVotes / totalEligible) * 100;
+}
+
+function toDateTimeLocalInput(value: Date | null | undefined): string {
+  if (!value || Number.isNaN(value.getTime())) return "";
+  const pad = (v: number) => String(v).padStart(2, "0");
+  const year = value.getFullYear();
+  const month = pad(value.getMonth() + 1);
+  const day = pad(value.getDate());
+  const hours = pad(value.getHours());
+  const minutes = pad(value.getMinutes());
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 function PlaceholderPage({ title, subtitle, actionLabel, loading = false }: PlaceholderPageProps) {
@@ -148,7 +159,6 @@ export function MemberProfilePage() {
   const [lastName, setLastName] = useState<string | undefined>(undefined);
   const [city, setCity] = useState<string | undefined>(undefined);
   const [phone, setPhone] = useState<string | undefined>(undefined);
-  const [sectionId, setSectionId] = useState<string | undefined>(undefined);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [passwordFeedback, setPasswordFeedback] = useState<string | null>(null);
@@ -160,7 +170,8 @@ export function MemberProfilePage() {
   const lastNameValue = lastName ?? profile?.lastName ?? "";
   const cityValue = city ?? profile?.city ?? "";
   const phoneValue = phone ?? profile?.phone ?? "";
-  const sectionValue = sectionId ?? profile?.sectionId ?? "";
+  const sectionValue = profile?.sectionId ?? "";
+  const sectionLabel = sectionsQuery.data?.find((section) => section.id === sectionValue)?.name ?? sectionValue;
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -172,7 +183,6 @@ export function MemberProfilePage() {
           lastName: lastNameValue,
           city: cityValue,
           phone: phoneValue,
-          sectionId: sectionValue,
         },
       });
     },
@@ -183,7 +193,6 @@ export function MemberProfilePage() {
       setLastName(undefined);
       setCity(undefined);
       setPhone(undefined);
-      setSectionId(undefined);
       await queryClient.invalidateQueries({ queryKey: queryKeys.members });
       await queryClient.invalidateQueries({ queryKey: queryKeys.sections });
       await refreshAuthState();
@@ -201,11 +210,12 @@ export function MemberProfilePage() {
       if (newPassword !== confirmPassword) throw new Error("La confirmation du mot de passe ne correspond pas.");
       await callFunction("setMyPassword", { newPassword });
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       setPasswordError(null);
       setPasswordFeedback("Mot de passe mis a jour.");
       setNewPassword("");
       setConfirmPassword("");
+      await refreshAuthState();
     },
     onError: (mutationError) => {
       setPasswordFeedback(null);
@@ -216,6 +226,11 @@ export function MemberProfilePage() {
   return (
     <Stack spacing={2}>
       <Typography variant="h4">Mon profil</Typography>
+      {profile?.passwordChangeRequired ? (
+        <Alert severity="warning">
+          Changement de mot de passe obligatoire avant l&apos;acces au vote et aux autres pages.
+        </Alert>
+      ) : null}
       {feedback ? <Alert severity="success">{feedback}</Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
       <Card>
@@ -225,24 +240,7 @@ export function MemberProfilePage() {
             <TextField label="Nom" value={lastNameValue} onChange={(event) => setLastName(event.target.value)} />
             <TextField label="Ville" value={cityValue} onChange={(event) => setCity(event.target.value)} />
             <TextField label="Telephone" value={phoneValue} onChange={(event) => setPhone(event.target.value)} />
-            <FormControl fullWidth>
-              <InputLabel id="member-profile-section">Section (optionnel)</InputLabel>
-              <Select
-                labelId="member-profile-section"
-                label="Section (optionnel)"
-                value={sectionValue}
-                onChange={(event) => setSectionId(event.target.value)}
-              >
-                <MenuItem value="">
-                  <em>Aucune section</em>
-                </MenuItem>
-                {sectionsQuery.data?.map((section) => (
-                  <MenuItem key={section.id} value={section.id}>
-                    {section.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <TextField label="Section (geree par admin)" value={sectionLabel || "-"} InputProps={{ readOnly: true }} />
             <Button variant="contained" onClick={() => mutation.mutate()} disabled={mutation.isPending || !user}>
               Mettre a jour
             </Button>
@@ -562,22 +560,34 @@ export function MemberEligibilityPage() {
         <Card>
           <CardContent>
             <Stack spacing={2}>
-              <Typography variant="h6">Election en cours</Typography>
-              <FormControl fullWidth>
-                <InputLabel id="eligibility-election">Election</InputLabel>
-                <Select
-                  labelId="eligibility-election"
-                  label="Election"
-                  value={activeElectionId}
-                  onChange={(event) => setSelectedElectionId(event.target.value)}
-                >
-                  {openElections.map((election) => (
-                    <MenuItem key={election.id} value={election.id}>
-                      {election.title}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+              <Typography variant="h6">Elections en cours</Typography>
+              <Stack spacing={1}>
+                {openElections.map((election) => (
+                  <Card
+                    key={election.id}
+                    variant="outlined"
+                    sx={{ borderColor: activeElectionId === election.id ? "primary.main" : undefined }}
+                  >
+                    <CardContent sx={{ py: 1.4, "&:last-child": { pb: 1.4 } }}>
+                      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between">
+                        <Box>
+                          <Typography variant="subtitle2">{election.title}</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {`Cloture: ${election.endAt?.toDate?.()?.toLocaleString("fr-FR") ?? "-"}`}
+                          </Typography>
+                        </Box>
+                        <Button
+                          size="small"
+                          variant={activeElectionId === election.id ? "contained" : "outlined"}
+                          onClick={() => setSelectedElectionId(election.id)}
+                        >
+                          {activeElectionId === election.id ? "Selectionnee" : "Selectionner"}
+                        </Button>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                ))}
+              </Stack>
             </Stack>
           </CardContent>
         </Card>
@@ -639,9 +649,7 @@ export function MemberEligibilityPage() {
 export function MemberVotePage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const [selectedElectionId, setSelectedElectionId] = useState("");
-  const [voteFlowStartedByElectionId, setVoteFlowStartedByElectionId] = useState<Record<string, boolean>>({});
-  const [candidateToConfirmByElectionId, setCandidateToConfirmByElectionId] = useState<Record<string, Candidate | null>>({});
+  const [pendingVote, setPendingVote] = useState<{ electionId: string; candidate: Candidate } | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -653,63 +661,109 @@ export function MemberVotePage() {
     () => (electionsQuery.data ?? []).filter((election) => election.status === "open"),
     [electionsQuery.data],
   );
-  const activeElectionId = selectedElectionId || openElections[0]?.id || "";
-  const activeElection = openElections.find((election) => election.id === activeElectionId) ?? null;
-  const voteFlowStarted = Boolean(voteFlowStartedByElectionId[activeElectionId]);
-  const candidateToConfirm = candidateToConfirmByElectionId[activeElectionId] ?? null;
 
-  const candidatesQuery = useQuery({
-    queryKey: ["candidates", activeElectionId],
-    queryFn: () => fetchCandidates(activeElectionId),
-    enabled: Boolean(activeElectionId),
+  const candidatesQueries = useQueries({
+    queries: openElections.map((election) => ({
+      queryKey: ["candidates", election.id],
+      queryFn: () => fetchCandidates(election.id),
+      enabled: Boolean(election.id),
+    })),
   });
 
-  const eligibilityQuery = useQuery({
-    queryKey: ["eligibility", user?.uid, activeElectionId],
-    queryFn: async () => {
-      if (!user || !activeElectionId) return null;
-      return callFunction("computeEligibility", {
-        memberId: user.uid,
-        electionId: activeElectionId,
-      }) as Promise<{ eligible: boolean; reasons: Array<{ condition: string; detail: string; met: boolean }> }>;
-    },
-    enabled: Boolean(user && activeElectionId),
+  const eligibilityQueries = useQueries({
+    queries: openElections.map((election) => ({
+      queryKey: ["eligibility", user?.uid, election.id],
+      queryFn: async () =>
+        (callFunction("computeEligibility", {
+          memberId: user?.uid,
+          electionId: election.id,
+        }) as Promise<{ eligible: boolean; reasons: Array<{ condition: string; detail: string; met: boolean }> }>),
+      enabled: Boolean(user?.uid && election.id),
+    })),
   });
 
-  const voteStatusQuery = useQuery({
-    queryKey: ["myVoteStatus", user?.uid, activeElectionId],
-    queryFn: async () => {
-      if (!activeElectionId) return null;
-      return callFunction("getMyVoteStatus", { electionId: activeElectionId }) as Promise<{
+  const voteStatusQueries = useQueries({
+    queries: openElections.map((election) => ({
+      queryKey: ["myVoteStatus", user?.uid, election.id],
+      queryFn: async () =>
+        (callFunction("getMyVoteStatus", { electionId: election.id }) as Promise<{
+          electionId: string;
+          hasVoted: boolean;
+          candidateId: string;
+          candidateDisplayName: string;
+          votedAtIso: string | null;
+        }>),
+      enabled: Boolean(user?.uid && election.id),
+    })),
+  });
+
+  const candidatesByElectionId = useMemo(() => {
+    const map = new Map<string, Candidate[]>();
+    openElections.forEach((election, index) => {
+      const data = candidatesQueries[index]?.data ?? [];
+      map.set(election.id, data.filter((candidate) => candidate.status === "validated"));
+    });
+    return map;
+  }, [openElections, candidatesQueries]);
+
+  const eligibilityByElectionId = useMemo(() => {
+    const map = new Map<string, { eligible: boolean; reasons: Array<{ condition: string; detail: string; met: boolean }> }>();
+    openElections.forEach((election, index) => {
+      const data = eligibilityQueries[index]?.data;
+      if (data) map.set(election.id, data);
+    });
+    return map;
+  }, [openElections, eligibilityQueries]);
+
+  const voteStatusByElectionId = useMemo(() => {
+    const map = new Map<
+      string,
+      {
         electionId: string;
         hasVoted: boolean;
         candidateId: string;
         candidateDisplayName: string;
         votedAtIso: string | null;
-      }>;
-    },
-    enabled: Boolean(user && activeElectionId),
-  });
-  const hasAlreadyVoted = Boolean(voteStatusQuery.data?.hasVoted);
-  const votedCandidateName = voteStatusQuery.data?.candidateDisplayName || voteStatusQuery.data?.candidateId || "candidat inconnu";
+      }
+    >();
+    openElections.forEach((election, index) => {
+      const data = voteStatusQueries[index]?.data;
+      if (data) map.set(election.id, data);
+    });
+    return map;
+  }, [openElections, voteStatusQueries]);
+
+  const electionTitleById = useMemo(() => {
+    const map = new Map<string, string>();
+    openElections.forEach((election) => map.set(election.id, election.title));
+    return map;
+  }, [openElections]);
+
+  const pendingElectionId = pendingVote?.electionId ?? "";
+  const pendingCandidate = pendingVote?.candidate ?? null;
 
   const voteMutation = useMutation({
     mutationFn: async () => {
-      if (!activeElectionId || !candidateToConfirm) throw new Error("Selection invalide");
+      if (!pendingVote) throw new Error("Selection invalide");
       return callFunction("castVote", {
-        electionId: activeElectionId,
-        candidateId: candidateToConfirm.id,
+        electionId: pendingVote.electionId,
+        candidateId: pendingVote.candidate.id,
       });
     },
     onSuccess: async () => {
-      const latestCandidateName = candidateToConfirm?.displayName || "";
+      const votedElectionId = pendingVote?.electionId ?? "";
+      const votedElectionTitle = electionTitleById.get(votedElectionId) ?? votedElectionId;
+      const votedCandidateName = pendingVote?.candidate.displayName ?? "";
       setError(null);
       setFeedback(
-        latestCandidateName ? `Votre vote est enregistre pour ${latestCandidateName}.` : "Votre vote est enregistre.",
+        votedCandidateName
+          ? `Vote enregistre pour ${votedCandidateName} (${votedElectionTitle}).`
+          : `Vote enregistre (${votedElectionTitle}).`,
       );
-      setCandidateToConfirmByElectionId((previous) => ({ ...previous, [activeElectionId]: null }));
+      setPendingVote(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.memberElections });
-      await queryClient.invalidateQueries({ queryKey: ["myVoteStatus", user?.uid, activeElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["myVoteStatus", user?.uid, votedElectionId] });
+      await queryClient.invalidateQueries({ queryKey: ["electionScores", votedElectionId] });
     },
     onError: (mutationError) => {
       setFeedback(null);
@@ -727,184 +781,142 @@ export function MemberVotePage() {
       <Card>
         <CardContent>
           <Stack spacing={2}>
-            <Typography variant="h6">Election ouverte</Typography>
-            {openElections.length === 0 ? (
-              <Alert severity="info">Aucune election ouverte pour le moment.</Alert>
-            ) : (
-              <>
-                <FormControl fullWidth>
-                  <InputLabel id="member-election">Election</InputLabel>
-                  <Select
-                    labelId="member-election"
-                    label="Election"
-                    value={activeElectionId}
-                    onChange={(event) => {
-                      setSelectedElectionId(event.target.value);
-                      setError(null);
-                      setFeedback(null);
-                    }}
-                  >
-                    {openElections.map((election) => (
-                      <MenuItem key={election.id} value={election.id}>
-                        {election.title}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                {activeElection ? (
-                  <Alert severity="info">
-                    {`Cloture le ${activeElection.endAt?.toDate().toLocaleString("fr-FR")}`}
-                  </Alert>
-                ) : null}
-                {voteStatusQuery.data?.hasVoted ? (
-                  <Alert severity="success">
-                    {`Vote deja enregistre pour ${votedCandidateName}${
-                      voteStatusQuery.data?.votedAtIso
-                        ? ` le ${new Date(voteStatusQuery.data.votedAtIso).toLocaleString("fr-FR")}`
-                        : ""
-                    }.`}
-                  </Alert>
-                ) : null}
-                {eligibilityQuery.data && !eligibilityQuery.data.eligible ? (
-                  <Alert severity="warning">{"Vous n'etes pas eligible pour cette election."}</Alert>
-                ) : null}
-                {eligibilityQuery.data?.eligible && !hasAlreadyVoted ? (
-                  <Box>
-                    <Button
-                      variant="contained"
-                      onClick={() =>
-                        setVoteFlowStartedByElectionId((previous) => ({ ...previous, [activeElectionId]: true }))
-                      }
-                    >
-                      Afficher les candidats
-                    </Button>
-                  </Box>
-                ) : null}
-                {eligibilityQuery.data?.eligible && hasAlreadyVoted ? (
-                  <Box>
-                    <Button
-                      variant="outlined"
-                      onClick={() =>
-                        setVoteFlowStartedByElectionId((previous) => ({ ...previous, [activeElectionId]: true }))
-                      }
-                    >
-                      Voir les candidats
-                    </Button>
-                  </Box>
-                ) : null}
-              </>
-            )}
-          </Stack>
-        </CardContent>
-      </Card>
+            <Typography variant="h6">Elections ouvertes et candidats</Typography>
+            {openElections.length === 0 ? <Alert severity="info">Aucune election ouverte pour le moment.</Alert> : null}
+            <Stack spacing={2}>
+              {openElections.map((election, index) => {
+                const candidatesQuery = candidatesQueries[index];
+                const electionCandidates = candidatesByElectionId.get(election.id) ?? [];
+                const eligibility = eligibilityByElectionId.get(election.id);
+                const voteStatus = voteStatusByElectionId.get(election.id);
+                const hasAlreadyVoted = Boolean(voteStatus?.hasVoted);
+                const votedCandidateName =
+                  voteStatus?.candidateDisplayName || voteStatus?.candidateId || "candidat inconnu";
 
-      <Card>
-        <CardContent>
-          <Typography variant="h6" mb={2}>
-            Candidats
-          </Typography>
-          {!voteFlowStarted ? (
-            <Alert severity="info">
-              Selectionnez l'election puis appuyez sur "Afficher les candidats" pour commencer.
-            </Alert>
-          ) : null}
-          {candidatesQuery.isLoading ? <Skeleton height={120} /> : null}
-          {voteFlowStarted && (candidatesQuery.data?.length ?? 0) === 0 ? (
-            <Alert severity="info">Aucun candidat valide disponible.</Alert>
-          ) : null}
-          <Stack spacing={2}>
-            {voteFlowStarted
-              ? candidatesQuery.data
-              ?.filter((candidate) => candidate.status === "validated")
-              .map((candidate) => (
-                <Card key={candidate.id} variant="outlined">
-                  <CardContent>
-                    <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
-                      <Box
-                        sx={{
-                          width: { xs: "100%", md: 160 },
-                          minWidth: { md: 160 },
-                          display: "flex",
-                          justifyContent: "center",
-                          alignItems: "flex-start",
-                        }}
-                      >
-                        <Avatar
-                          src={candidate.photoUrl || undefined}
-                          alt={candidate.displayName}
-                          variant="rounded"
-                          sx={{ width: { xs: 112, md: 132 }, height: { xs: 112, md: 132 }, bgcolor: "primary.light" }}
-                        >
-                          {candidate.displayName.slice(0, 1).toUpperCase()}
-                        </Avatar>
-                      </Box>
-                      <Stack spacing={1.2} sx={{ maxWidth: 760 }}>
-                        <Box>
-                          <Typography variant="h6">{candidate.displayName}</Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {candidate.sectionName || "-"}
-                          </Typography>
-                        </Box>
-                        <Box>
-                          <Typography variant="subtitle2">Presentation</Typography>
-                          <Typography variant="body2">{candidate.bio || "Aucune presentation."}</Typography>
-                        </Box>
-                        <Box>
-                          <Typography variant="subtitle2">Projet</Typography>
-                          <Typography variant="body2">
-                            {candidate.projectSummary || "Aucun projet detaille pour le moment."}
-                          </Typography>
-                        </Box>
-                        {candidate.videoUrl ? (
-                          <Button variant="text" href={candidate.videoUrl} target="_blank" rel="noreferrer">
-                            Voir la video de presentation
-                          </Button>
+                return (
+                  <Card key={election.id} variant="outlined">
+                    <CardContent>
+                      <Stack spacing={1.6}>
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between">
+                          <Box>
+                            <Typography variant="h6">{election.title}</Typography>
+                            <Typography variant="body2" color="text.secondary">
+                              {`Cloture le ${election.endAt?.toDate?.()?.toLocaleString("fr-FR") ?? "-"}`}
+                            </Typography>
+                          </Box>
+                          <Chip size="small" color="info" label={`Election: ${election.id}`} sx={{ maxWidth: 320 }} />
+                        </Stack>
+
+                        {voteStatus?.hasVoted ? (
+                          <Alert severity="success">
+                            {`Vote deja enregistre pour ${votedCandidateName}${
+                              voteStatus.votedAtIso ? ` le ${new Date(voteStatus.votedAtIso).toLocaleString("fr-FR")}` : ""
+                            }.`}
+                          </Alert>
                         ) : null}
+                        {eligibility && !eligibility.eligible ? (
+                          <Alert severity="warning">Vous n'etes pas eligible pour cette election.</Alert>
+                        ) : null}
+                        {candidatesQuery.error ? <Alert severity="error">{getErrorMessage(candidatesQuery.error)}</Alert> : null}
+                        {candidatesQuery.isLoading ? <Skeleton height={120} /> : null}
+                        {!candidatesQuery.isLoading && electionCandidates.length === 0 ? (
+                          <Alert severity="info">Aucun candidat valide disponible pour cette election.</Alert>
+                        ) : null}
+
+                        <Stack spacing={1.2}>
+                          {electionCandidates.map((candidate) => (
+                            <Card key={candidate.id} variant="outlined">
+                              <CardContent>
+                                <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
+                                  <Box
+                                    sx={{
+                                      width: { xs: "100%", md: 160 },
+                                      minWidth: { md: 160 },
+                                      display: "flex",
+                                      justifyContent: "center",
+                                      alignItems: "flex-start",
+                                    }}
+                                  >
+                                    <Avatar
+                                      src={candidate.photoUrl || undefined}
+                                      alt={candidate.displayName}
+                                      variant="rounded"
+                                      sx={{ width: { xs: 96, md: 116 }, height: { xs: 96, md: 116 }, bgcolor: "primary.light" }}
+                                    >
+                                      {candidate.displayName.slice(0, 1).toUpperCase()}
+                                    </Avatar>
+                                  </Box>
+                                  <Stack spacing={1.1} sx={{ maxWidth: 760 }}>
+                                    <Box>
+                                      <Typography variant="subtitle1">{candidate.displayName}</Typography>
+                                      <Typography variant="body2" color="text.secondary">
+                                        {candidate.sectionName || "-"}
+                                      </Typography>
+                                    </Box>
+                                    <Box>
+                                      <Typography variant="subtitle2">Presentation</Typography>
+                                      <Typography variant="body2">{candidate.bio || "Aucune presentation."}</Typography>
+                                    </Box>
+                                    <Box>
+                                      <Typography variant="subtitle2">Projet</Typography>
+                                      <Typography variant="body2">
+                                        {candidate.projectSummary || "Aucun projet detaille pour le moment."}
+                                      </Typography>
+                                    </Box>
+                                    {candidate.videoUrl ? (
+                                      <Button variant="text" href={candidate.videoUrl} target="_blank" rel="noreferrer">
+                                        Voir la video de presentation
+                                      </Button>
+                                    ) : null}
+                                  </Stack>
+                                  <Box sx={{ alignSelf: { xs: "stretch", md: "center" }, width: { xs: "100%", md: "auto" } }}>
+                                    <Stack spacing={1} alignItems={{ xs: "flex-start", md: "flex-end" }}>
+                                      {hasAlreadyVoted && voteStatus?.candidateId === candidate.id ? (
+                                        <Chip label="Votre vote" color="success" />
+                                      ) : null}
+                                      <Button
+                                        variant="contained"
+                                        onClick={() => {
+                                          if (hasAlreadyVoted) return;
+                                          setPendingVote({ electionId: election.id, candidate });
+                                        }}
+                                        disabled={!eligibility?.eligible || hasAlreadyVoted}
+                                        sx={{ width: { xs: "100%", sm: "auto" } }}
+                                      >
+                                        {hasAlreadyVoted ? "Vote deja enregistre" : "Voter pour ce candidat"}
+                                      </Button>
+                                    </Stack>
+                                  </Box>
+                                </Stack>
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </Stack>
                       </Stack>
-                        <Box sx={{ alignSelf: { xs: "stretch", md: "center" }, width: { xs: "100%", md: "auto" } }}>
-                          <Stack spacing={1} alignItems={{ xs: "flex-start", md: "flex-end" }}>
-                            {hasAlreadyVoted && voteStatusQuery.data?.candidateId === candidate.id ? (
-                              <Chip label="Votre vote" color="success" />
-                            ) : null}
-                            <Button
-                              variant="contained"
-                              onClick={() => {
-                                if (hasAlreadyVoted) return;
-                                setCandidateToConfirmByElectionId((previous) => ({
-                                  ...previous,
-                                  [activeElectionId]: candidate,
-                                }));
-                              }}
-                              disabled={!eligibilityQuery.data?.eligible || hasAlreadyVoted}
-                              sx={{ width: { xs: "100%", sm: "auto" } }}
-                            >
-                              {hasAlreadyVoted ? "Vote deja enregistre" : "Voter pour ce candidat"}
-                            </Button>
-                          </Stack>
-                        </Box>
-                      </Stack>
-                  </CardContent>
-                </Card>
-              ))
-              : null}
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </Stack>
           </Stack>
         </CardContent>
       </Card>
 
       <Dialog
-        open={Boolean(candidateToConfirm) && !hasAlreadyVoted}
-        onClose={() => setCandidateToConfirmByElectionId((previous) => ({ ...previous, [activeElectionId]: null }))}
+        open={Boolean(pendingVote)}
+        onClose={() => setPendingVote(null)}
       >
         <DialogTitle>Confirmer le vote</DialogTitle>
         <DialogContent>
           <Typography>
-            {`Vous allez voter pour ${candidateToConfirm?.displayName}. Cette action est definitive.`}
+            {`Election: ${electionTitleById.get(pendingElectionId) ?? pendingElectionId}`}
+          </Typography>
+          <Typography mt={1}>
+            {`Vous allez voter pour ${pendingCandidate?.displayName}. Cette action est definitive.`}
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setCandidateToConfirmByElectionId((previous) => ({ ...previous, [activeElectionId]: null }))}>
-            Annuler
-          </Button>
+          <Button onClick={() => setPendingVote(null)}>Annuler</Button>
           <Button variant="contained" onClick={() => voteMutation.mutate()} disabled={voteMutation.isPending}>
             Confirmer
           </Button>
@@ -955,21 +967,40 @@ export function MemberResultsPage() {
       {publishedElections.length === 0 ? (
         <Alert severity="info">Aucun resultat publie.</Alert>
       ) : (
-        <FormControl fullWidth>
-          <InputLabel id="results-election">Election</InputLabel>
-          <Select
-            labelId="results-election"
-            label="Election"
-            value={activeElectionId}
-            onChange={(event) => setSelectedElectionId(event.target.value)}
-          >
-            {publishedElections.map((election) => (
-              <MenuItem key={election.id} value={election.id}>
-                {election.title}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        <Card>
+          <CardContent>
+            <Stack spacing={1}>
+              <Typography variant="h6">Elections publiees</Typography>
+              {publishedElections.map((election) => (
+                <Card
+                  key={election.id}
+                  variant="outlined"
+                  sx={{ borderColor: activeElectionId === election.id ? "primary.main" : undefined }}
+                >
+                  <CardContent sx={{ py: 1.4, "&:last-child": { pb: 1.4 } }}>
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between">
+                      <Box>
+                        <Typography variant="subtitle2">{election.title}</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {`Periode: ${election.startAt?.toDate?.()?.toLocaleString("fr-FR") ?? "-"} -> ${
+                            election.endAt?.toDate?.()?.toLocaleString("fr-FR") ?? "-"
+                          }`}
+                        </Typography>
+                      </Box>
+                      <Button
+                        size="small"
+                        variant={activeElectionId === election.id ? "contained" : "outlined"}
+                        onClick={() => setSelectedElectionId(election.id)}
+                      >
+                        {activeElectionId === election.id ? "Selectionnee" : "Voir"}
+                      </Button>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))}
+            </Stack>
+          </CardContent>
+        </Card>
       )}
 
       {resultsQuery.isLoading ? <Skeleton height={120} /> : null}
@@ -2522,6 +2553,8 @@ export function AdminElectionsPage() {
   const [managedCandidateConditionIdsByElectionId, setManagedCandidateConditionIdsByElectionId] = useState<
     Record<string, string[]>
   >({});
+  const [managedStartAtByElectionId, setManagedStartAtByElectionId] = useState<Record<string, string>>({});
+  const [managedEndAtByElectionId, setManagedEndAtByElectionId] = useState<Record<string, string>>({});
   const [candidateMemberId, setCandidateMemberId] = useState("");
   const [candidateBio, setCandidateBio] = useState("");
   const [candidateProjectSummary, setCandidateProjectSummary] = useState("");
@@ -2550,6 +2583,18 @@ export function AdminElectionsPage() {
     () =>
       managedCandidateConditionIdsByElectionId[activeSelectedElectionId] ?? selectedElection?.candidateConditionIds ?? [],
     [activeSelectedElectionId, managedCandidateConditionIdsByElectionId, selectedElection?.candidateConditionIds],
+  );
+  const managedStartAt = useMemo(
+    () =>
+      managedStartAtByElectionId[activeSelectedElectionId] ??
+      toDateTimeLocalInput(selectedElection?.startAt?.toDate?.()),
+    [activeSelectedElectionId, managedStartAtByElectionId, selectedElection?.startAt],
+  );
+  const managedEndAt = useMemo(
+    () =>
+      managedEndAtByElectionId[activeSelectedElectionId] ??
+      toDateTimeLocalInput(selectedElection?.endAt?.toDate?.()),
+    [activeSelectedElectionId, managedEndAtByElectionId, selectedElection?.endAt],
   );
   const canEditSelectedElectionConditions = Boolean(
     selectedElection &&
@@ -2658,6 +2703,23 @@ export function AdminElectionsPage() {
       setCandidateVideoUrl("");
       setCandidatePhotoUrl("");
       await queryClient.invalidateQueries({ queryKey: ["candidates", activeSelectedElectionId] });
+    },
+    onError: (mutationError) => setError(getErrorMessage(mutationError)),
+  });
+
+  const updateElectionDatesMutation = useMutation({
+    mutationFn: () =>
+      callFunction("updateElection", {
+        electionId: activeSelectedElectionId,
+        updates: {
+          startAt: new Date(managedStartAt).toISOString(),
+          endAt: new Date(managedEndAt).toISOString(),
+        },
+      }),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.elections });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.memberElections });
     },
     onError: (mutationError) => setError(getErrorMessage(mutationError)),
   });
@@ -2930,6 +2992,14 @@ export function AdminElectionsPage() {
                                 ...previous,
                                 [election.id]: election.candidateConditionIds ?? [],
                               }));
+                              setManagedStartAtByElectionId((previous) => ({
+                                ...previous,
+                                [election.id]: toDateTimeLocalInput(election.startAt?.toDate?.()),
+                              }));
+                              setManagedEndAtByElectionId((previous) => ({
+                                ...previous,
+                                [election.id]: toDateTimeLocalInput(election.endAt?.toDate?.()),
+                              }));
                             }}
                           >
                             Gerer
@@ -3027,6 +3097,14 @@ export function AdminElectionsPage() {
                                 setManagedCandidateConditionIdsByElectionId((previous) => ({
                                   ...previous,
                                   [election.id]: election.candidateConditionIds ?? [],
+                                }));
+                                setManagedStartAtByElectionId((previous) => ({
+                                  ...previous,
+                                  [election.id]: toDateTimeLocalInput(election.startAt?.toDate?.()),
+                                }));
+                                setManagedEndAtByElectionId((previous) => ({
+                                  ...previous,
+                                  [election.id]: toDateTimeLocalInput(election.endAt?.toDate?.()),
                                 }));
                               }}
                             >
@@ -3196,12 +3274,56 @@ export function AdminElectionsPage() {
               <Typography variant="h6">Parametres de l'election</Typography>
               <Alert severity="info">
                 {selectedElection?.status === "open"
-                  ? "Election ouverte: vous pouvez encore ajuster les conditions de vote/candidat."
-                  : "Utilisez ce panneau pour modifier les conditions de cette election."}
+                  ? "Election ouverte: vous pouvez ajuster les dates et les conditions."
+                  : "Utilisez ce panneau pour modifier les dates et les conditions de cette election."}
               </Alert>
               {!canEditSelectedElectionConditions ? (
-                <Alert severity="warning">Cette election est verrouillee pour les modifications de conditions.</Alert>
+                <Alert severity="warning">Cette election est verrouillee pour les modifications.</Alert>
               ) : null}
+              <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                <TextField
+                  label="Ouverture"
+                  type="datetime-local"
+                  fullWidth
+                  value={managedStartAt}
+                  onChange={(event) =>
+                    setManagedStartAtByElectionId((previous) => ({
+                      ...previous,
+                      [activeSelectedElectionId]: event.target.value,
+                    }))
+                  }
+                  InputLabelProps={{ shrink: true }}
+                  disabled={!canEditSelectedElectionConditions || updateElectionDatesMutation.isPending}
+                />
+                <TextField
+                  label="Cloture"
+                  type="datetime-local"
+                  fullWidth
+                  value={managedEndAt}
+                  onChange={(event) =>
+                    setManagedEndAtByElectionId((previous) => ({
+                      ...previous,
+                      [activeSelectedElectionId]: event.target.value,
+                    }))
+                  }
+                  InputLabelProps={{ shrink: true }}
+                  disabled={!canEditSelectedElectionConditions || updateElectionDatesMutation.isPending}
+                />
+              </Stack>
+              <Box>
+                <Button
+                  variant="contained"
+                  onClick={() => updateElectionDatesMutation.mutate()}
+                  disabled={
+                    !canEditSelectedElectionConditions ||
+                    !managedStartAt ||
+                    !managedEndAt ||
+                    updateElectionDatesMutation.isPending
+                  }
+                >
+                  Enregistrer les dates
+                </Button>
+              </Box>
               <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                 <FormControl fullWidth>
                   <InputLabel id="manage-voter-conditions">Conditions vote</InputLabel>

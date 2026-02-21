@@ -22,6 +22,8 @@ export type Member = {
   registrationSource?: "self_registration" | "admin_created";
   votingApprovedByAdmin?: boolean;
   emailVerified?: boolean;
+  passwordChangeRequired?: boolean;
+  passwordUpdatedAt?: Timestamp | null;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
   contributionUpToDate?: boolean;

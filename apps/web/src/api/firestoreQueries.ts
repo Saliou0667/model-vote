@@ -36,6 +36,8 @@ function toMember(id: string, data: DocumentData): Member {
     registrationSource: (data.registrationSource ?? "self_registration") as Member["registrationSource"],
     votingApprovedByAdmin: Boolean(data.votingApprovedByAdmin),
     emailVerified: Boolean(data.emailVerified),
+    passwordChangeRequired: Boolean(data.passwordChangeRequired),
+    passwordUpdatedAt: data.passwordUpdatedAt ?? null,
     contributionUpToDate: Boolean(data.contributionUpToDate),
     createdAt: data.createdAt,
     updatedAt: data.updatedAt,

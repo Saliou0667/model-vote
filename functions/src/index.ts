@@ -372,6 +372,8 @@ export const ensureMemberProfile = onCall(async (request) => {
         status: "pending",
         registrationSource: "self_registration",
         votingApprovedByAdmin: false,
+        passwordChangeRequired: false,
+        passwordUpdatedAt: FieldValue.serverTimestamp(),
         emailVerified,
         firstName: "",
         lastName: "",
@@ -398,12 +400,20 @@ export const ensureMemberProfile = onCall(async (request) => {
       role?: Role;
       status?: MemberStatus;
       registrationSource?: MemberRegistrationSource;
+      passwordChangeRequired?: boolean;
+      passwordUpdatedAt?: unknown;
     };
     const mergePatch: Record<string, unknown> = {
       email: normalizedEmail,
       emailVerified,
       updatedAt: FieldValue.serverTimestamp(),
     };
+    if (typeof current.passwordChangeRequired !== "boolean") {
+      mergePatch.passwordChangeRequired = false;
+    }
+    if (!current.passwordUpdatedAt) {
+      mergePatch.passwordUpdatedAt = FieldValue.serverTimestamp();
+    }
     if (!current.registrationSource && current.role === "member" && current.status === "pending") {
       mergePatch.registrationSource = "self_registration";
       mergePatch.votingApprovedByAdmin = false;
@@ -459,6 +469,8 @@ export const bootstrapRole = onCall(async (request) => {
         email,
         role: "superadmin",
         status: "active",
+        passwordChangeRequired: false,
+        passwordUpdatedAt: FieldValue.serverTimestamp(),
         emailVerified: request.auth?.token?.email_verified ?? false,
         updatedAt: FieldValue.serverTimestamp(),
         createdAt: member.exists
@@ -714,6 +726,8 @@ export const createMember = onCall(async (request) => {
         status,
         registrationSource: "admin_created",
         votingApprovedByAdmin: true,
+        passwordChangeRequired: true,
+        passwordUpdatedAt: null,
         emailVerified: false,
         profileCompleted: isProfileCompleted({ firstName, lastName, city, phone }),
         joinedAt: FieldValue.serverTimestamp(),
@@ -791,6 +805,17 @@ export const setMyPassword = onCall(async (request) => {
   const newPassword = requirePassword(request.data?.newPassword, "newPassword");
 
   await auth.updateUser(actorUid, { password: newPassword });
+  await db
+    .collection("members")
+    .doc(actorUid)
+    .set(
+      {
+        passwordChangeRequired: false,
+        passwordUpdatedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
 
   await writeAudit({
     action: "member.password_change",
@@ -1576,9 +1601,6 @@ export const addCandidate = onCall(async (request) => {
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
   const election = electionSnap.data() as {
     status?: string;
-    candidateConditionIds?: string[];
-    minSeniority?: number;
-    allowedSectionIds?: string[] | null;
   };
   if (election.status !== "draft") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_DRAFT");
@@ -1591,17 +1613,6 @@ export const addCandidate = onCall(async (request) => {
     .get();
   if (!existing.empty) {
     throw new HttpsError("already-exists", "ERROR_CANDIDATE_ALREADY_EXISTS");
-  }
-
-  const eligibility = await checkMemberAgainstRules({
-    memberId,
-    conditionIds: election.candidateConditionIds ?? [],
-    minSeniority: election.minSeniority ?? 0,
-    allowedSectionIds: election.allowedSectionIds ?? null,
-    context: "candidate",
-  });
-  if (!eligibility.eligible) {
-    throw new HttpsError("failed-precondition", "ERROR_CANDIDATE_NOT_ELIGIBLE");
   }
 
   const memberSnap = await db.collection("members").doc(memberId).get();
@@ -1844,7 +1855,6 @@ export const openElection = onCall(async (request) => {
 
   const candidatesSnap = await db.collection(`elections/${electionId}/candidates`).get();
   const validated = candidatesSnap.docs.filter((doc) => doc.data().status === "validated");
-  if (validated.length < 2) throw new HttpsError("failed-precondition", "ERROR_NO_CANDIDATES");
 
   const shuffled = [...validated].sort(() => Math.random() - 0.5);
   const batch = db.batch();

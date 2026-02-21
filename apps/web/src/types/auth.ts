@@ -15,6 +15,7 @@ export interface MemberProfile {
   city?: string;
   phone?: string;
   sectionId?: string;
+  passwordChangeRequired?: boolean;
 }
 
 export type SignUpPayload = {
