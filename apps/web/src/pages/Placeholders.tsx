@@ -109,6 +109,27 @@ function resolveCandidatePhotoUrl(candidateName: string, candidatePhotoUrl?: str
   return fallback?.photoUrl;
 }
 
+function splitElectionTitleForDisplay(title: string): { scrutinTitle: string; posteTitle: string } {
+  const normalized = title.trim();
+  if (!normalized) {
+    return { scrutinTitle: "Election", posteTitle: "Poste non renseigne" };
+  }
+
+  const parts = normalized
+    .split(/\s[-–—]\s/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length >= 2) {
+    return {
+      scrutinTitle: parts[0],
+      posteTitle: parts.slice(1).join(" - "),
+    };
+  }
+
+  return { scrutinTitle: "Scrutin", posteTitle: normalized };
+}
+
 function memberStatusChipColor(status: Member["status"]): "warning" | "success" | "error" {
   if (status === "active") return "success";
   if (status === "suspended") return "error";
@@ -839,20 +860,79 @@ export function MemberVotePage() {
                 const hasAlreadyVoted = Boolean(voteStatus?.hasVoted);
                 const votedCandidateName =
                   voteStatus?.candidateDisplayName || voteStatus?.candidateId || "candidat inconnu";
+                const { scrutinTitle, posteTitle } = splitElectionTitleForDisplay(election.title);
 
                 return (
-                  <Card key={election.id} variant="outlined">
+                  <Card
+                    key={election.id}
+                    variant="outlined"
+                    sx={{
+                      borderColor: "rgba(25, 118, 210, 0.45)",
+                      borderWidth: 1,
+                      borderRadius: 2.5,
+                      backgroundColor: "rgba(25, 118, 210, 0.02)",
+                    }}
+                  >
                     <CardContent>
                       <Stack spacing={1.6}>
-                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between">
-                          <Box>
-                            <Typography variant="h6">{election.title}</Typography>
-                            <Typography variant="body2" color="text.secondary">
+                        <Box
+                          sx={{
+                            position: "relative",
+                            overflow: "hidden",
+                            borderRadius: 2,
+                            border: "1px solid",
+                            borderColor: "divider",
+                            background: "linear-gradient(135deg, rgba(25, 118, 210, 0.20) 0%, rgba(25, 118, 210, 0.08) 100%)",
+                            px: { xs: 1.5, sm: 2 },
+                            py: { xs: 1.3, sm: 1.7 },
+                          }}
+                        >
+                          <Box
+                            aria-hidden
+                            sx={{
+                              position: "absolute",
+                              left: 0,
+                              top: 0,
+                              bottom: 0,
+                              width: { xs: 10, sm: 12 },
+                              bgcolor: "primary.main",
+                            }}
+                          />
+                          <Box
+                            aria-hidden
+                            sx={{
+                              position: "absolute",
+                              right: 0,
+                              top: 0,
+                              bottom: 0,
+                              width: { xs: 10, sm: 12 },
+                              bgcolor: "primary.main",
+                            }}
+                          />
+                          <Stack spacing={0.55} sx={{ px: { xs: 2, sm: 2.6 }, alignItems: "center" }}>
+                            <Typography
+                              variant="overline"
+                              sx={{ color: "primary.main", fontWeight: 700, lineHeight: 1.15, textAlign: "center" }}
+                            >
+                              Scrutin
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600, textAlign: "center" }}>
+                              {scrutinTitle}
+                            </Typography>
+                            <Typography
+                              variant="overline"
+                              sx={{ color: "primary.main", fontWeight: 700, lineHeight: 1.15, mt: 0.4, textAlign: "center" }}
+                            >
+                              Poste a pourvoir
+                            </Typography>
+                            <Typography variant="h6" sx={{ lineHeight: 1.28, textAlign: "center" }}>
+                              {posteTitle}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4, textAlign: "center" }}>
                               {`Cloture le ${election.endAt?.toDate?.()?.toLocaleString("fr-FR") ?? "-"}`}
                             </Typography>
-                          </Box>
-                          <Chip size="small" color="info" label={`Election: ${election.id}`} sx={{ maxWidth: 320 }} />
-                        </Stack>
+                          </Stack>
+                        </Box>
 
                         {voteStatus?.hasVoted ? (
                           <Alert severity="success">
@@ -980,7 +1060,7 @@ export function MemberVotePage() {
         <DialogTitle>Confirmer le vote</DialogTitle>
         <DialogContent>
           <Typography>
-            {`Election: ${electionTitleById.get(pendingElectionId) ?? pendingElectionId}`}
+            {`Poste: ${electionTitleById.get(pendingElectionId) ?? pendingElectionId}`}
           </Typography>
           <Typography mt={1}>
             {`Vous allez voter pour ${pendingCandidate?.displayName}. Cette action est definitive.`}
