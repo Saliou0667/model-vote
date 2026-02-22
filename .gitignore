@@ -41,3 +41,10 @@ playwright-report/
 
 # Functions build
 functions/lib/
+
+# Production/private data and operational scripts (do not commit)
+exports/
+data/
+scripts/
+functions/scripts/import-electoral-prod.cjs
+apps/web/public/candidates/
