@@ -62,6 +62,53 @@ const queryKeys = {
   memberElections: ["memberElections"] as const,
 };
 
+const candidatePhotoFallbacks: Array<{ requiredTokens: string[]; forbiddenTokens?: string[]; photoUrl: string }> = [
+  { requiredTokens: ["mamoudou", "kourdiou", "diallo"], photoUrl: "/candidates/mamoudou-kourdiou-diallo.png" },
+  { requiredTokens: ["saikou", "diallo"], photoUrl: "/candidates/mamadou-saikou-diallo.png" },
+  { requiredTokens: ["dan", "daniel", "lama"], photoUrl: "/candidates/dan-daniel-lama.png" },
+  { requiredTokens: ["alseny", "camara"], photoUrl: "/candidates/alseny-camara.png" },
+  {
+    requiredTokens: ["thierno", "mamadou", "bobo", "fofana"],
+    photoUrl: "/candidates/thierno-mamadou-bobo-fofana.png",
+  },
+  { requiredTokens: ["mamadou", "samba", "barry"], photoUrl: "/candidates/mamadou-samba-barry.png" },
+  { requiredTokens: ["mamadou", "saliou", "barry"], photoUrl: "/candidates/mamadou-saliou-barry.png" },
+  { requiredTokens: ["hasmiou", "barry"], photoUrl: "/candidates/mamadou-hasmiou-barry.png" },
+  {
+    requiredTokens: ["boubacar", "diallo"],
+    forbiddenTokens: ["ibrahim"],
+    photoUrl: "/candidates/boubacar-diallo.png",
+  },
+  { requiredTokens: ["bailo", "diallo"], photoUrl: "/candidates/bailo-diallo.png" },
+  { requiredTokens: ["ibrahima", "sory", "sow"], photoUrl: "/candidates/ibrahima-sory-sow.png" },
+  {
+    requiredTokens: ["ibrahima", "sory", "nguilla", "diallo"],
+    photoUrl: "/candidates/ibrahima-sory-nguilla-diallo.png",
+  },
+];
+
+function normalizeCandidateName(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function resolveCandidatePhotoUrl(candidateName: string, candidatePhotoUrl?: string): string | undefined {
+  const explicitPhotoUrl = candidatePhotoUrl?.trim();
+  if (explicitPhotoUrl) return explicitPhotoUrl;
+  const normalizedName = normalizeCandidateName(candidateName);
+  const fallback = candidatePhotoFallbacks.find((entry) => {
+    const hasRequiredTokens = entry.requiredTokens.every((token) => normalizedName.includes(token));
+    if (!hasRequiredTokens) return false;
+    const hasForbiddenToken = (entry.forbiddenTokens ?? []).some((token) => normalizedName.includes(token));
+    return !hasForbiddenToken;
+  });
+  return fallback?.photoUrl;
+}
+
 function memberStatusChipColor(status: Member["status"]): "warning" | "success" | "error" {
   if (status === "active") return "success";
   if (status === "suspended") return "error";
@@ -227,8 +274,8 @@ export function MemberProfilePage() {
     <Stack spacing={2}>
       <Typography variant="h4">Mon profil</Typography>
       {profile?.passwordChangeRequired ? (
-        <Alert severity="warning">
-          Changement de mot de passe obligatoire avant l&apos;acces au vote et aux autres pages.
+        <Alert severity="info">
+          Vous pouvez changer votre mot de passe des maintenant (recommande), mais ce n&apos;est plus obligatoire pour voter.
         </Alert>
       ) : null}
       {feedback ? <Alert severity="success">{feedback}</Alert> : null}
@@ -824,73 +871,97 @@ export function MemberVotePage() {
                         ) : null}
 
                         <Stack spacing={1.2}>
-                          {electionCandidates.map((candidate) => (
-                            <Card key={candidate.id} variant="outlined">
-                              <CardContent>
-                                <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
-                                  <Box
-                                    sx={{
-                                      width: { xs: "100%", md: 160 },
-                                      minWidth: { md: 160 },
-                                      display: "flex",
-                                      justifyContent: "center",
-                                      alignItems: "flex-start",
-                                    }}
-                                  >
-                                    <Avatar
-                                      src={candidate.photoUrl || undefined}
-                                      alt={candidate.displayName}
-                                      variant="rounded"
-                                      sx={{ width: { xs: 96, md: 116 }, height: { xs: 96, md: 116 }, bgcolor: "primary.light" }}
+                          {electionCandidates.map((candidate) => {
+                            const effectivePhotoUrl = resolveCandidatePhotoUrl(candidate.displayName, candidate.photoUrl);
+                            return (
+                              <Card key={candidate.id} variant="outlined">
+                                <CardContent>
+                                  <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
+                                    <Box
+                                      sx={{
+                                        width: { xs: "100%", md: 220 },
+                                        minWidth: { md: 220 },
+                                        display: "flex",
+                                        justifyContent: "center",
+                                        alignItems: "flex-start",
+                                      }}
                                     >
-                                      {candidate.displayName.slice(0, 1).toUpperCase()}
-                                    </Avatar>
-                                  </Box>
-                                  <Stack spacing={1.1} sx={{ maxWidth: 760 }}>
-                                    <Box>
-                                      <Typography variant="subtitle1">{candidate.displayName}</Typography>
-                                      <Typography variant="body2" color="text.secondary">
-                                        {candidate.sectionName || "-"}
-                                      </Typography>
+                                      {effectivePhotoUrl ? (
+                                        <Box
+                                          component="img"
+                                          src={effectivePhotoUrl}
+                                          alt={candidate.displayName}
+                                          loading="lazy"
+                                          sx={{
+                                            width: { xs: "100%", sm: 260, md: 220 },
+                                            maxWidth: "100%",
+                                            aspectRatio: "1 / 1",
+                                            objectFit: "cover",
+                                            borderRadius: 2,
+                                            border: "1px solid",
+                                            borderColor: "divider",
+                                          }}
+                                        />
+                                      ) : (
+                                        <Avatar
+                                          alt={candidate.displayName}
+                                          variant="rounded"
+                                          sx={{
+                                            width: { xs: 96, md: 116 },
+                                            height: { xs: 96, md: 116 },
+                                            bgcolor: "primary.light",
+                                          }}
+                                        >
+                                          {candidate.displayName.slice(0, 1).toUpperCase()}
+                                        </Avatar>
+                                      )}
                                     </Box>
-                                    <Box>
-                                      <Typography variant="subtitle2">Presentation</Typography>
-                                      <Typography variant="body2">{candidate.bio || "Aucune presentation."}</Typography>
-                                    </Box>
-                                    <Box>
-                                      <Typography variant="subtitle2">Projet</Typography>
-                                      <Typography variant="body2">
-                                        {candidate.projectSummary || "Aucun projet detaille pour le moment."}
-                                      </Typography>
-                                    </Box>
-                                    {candidate.videoUrl ? (
-                                      <Button variant="text" href={candidate.videoUrl} target="_blank" rel="noreferrer">
-                                        Voir la video de presentation
-                                      </Button>
-                                    ) : null}
-                                  </Stack>
-                                  <Box sx={{ alignSelf: { xs: "stretch", md: "center" }, width: { xs: "100%", md: "auto" } }}>
-                                    <Stack spacing={1} alignItems={{ xs: "flex-start", md: "flex-end" }}>
-                                      {hasAlreadyVoted && voteStatus?.candidateId === candidate.id ? (
-                                        <Chip label="Votre vote" color="success" />
+                                    <Stack spacing={1.1} sx={{ maxWidth: 760 }}>
+                                      <Box>
+                                        <Typography variant="subtitle1">{candidate.displayName}</Typography>
+                                        <Typography variant="body2" color="text.secondary">
+                                          {candidate.sectionName || "-"}
+                                        </Typography>
+                                      </Box>
+                                      <Box>
+                                        <Typography variant="subtitle2">Presentation</Typography>
+                                        <Typography variant="body2">{candidate.bio || "Aucune presentation."}</Typography>
+                                      </Box>
+                                      <Box>
+                                        <Typography variant="subtitle2">Projet</Typography>
+                                        <Typography variant="body2">
+                                          {candidate.projectSummary || "Aucun projet detaille pour le moment."}
+                                        </Typography>
+                                      </Box>
+                                      {candidate.videoUrl ? (
+                                        <Button variant="text" href={candidate.videoUrl} target="_blank" rel="noreferrer">
+                                          Voir la video de presentation
+                                        </Button>
                                       ) : null}
-                                      <Button
-                                        variant="contained"
-                                        onClick={() => {
-                                          if (hasAlreadyVoted) return;
-                                          setPendingVote({ electionId: election.id, candidate });
-                                        }}
-                                        disabled={!eligibility?.eligible || hasAlreadyVoted}
-                                        sx={{ width: { xs: "100%", sm: "auto" } }}
-                                      >
-                                        {hasAlreadyVoted ? "Vote deja enregistre" : "Voter pour ce candidat"}
-                                      </Button>
                                     </Stack>
-                                  </Box>
-                                </Stack>
-                              </CardContent>
-                            </Card>
-                          ))}
+                                    <Box sx={{ alignSelf: { xs: "stretch", md: "center" }, width: { xs: "100%", md: "auto" } }}>
+                                      <Stack spacing={1} alignItems={{ xs: "flex-start", md: "flex-end" }}>
+                                        {hasAlreadyVoted && voteStatus?.candidateId === candidate.id ? (
+                                          <Chip label="Votre vote" color="success" />
+                                        ) : null}
+                                        <Button
+                                          variant="contained"
+                                          onClick={() => {
+                                            if (hasAlreadyVoted) return;
+                                            setPendingVote({ electionId: election.id, candidate });
+                                          }}
+                                          disabled={!eligibility?.eligible || hasAlreadyVoted}
+                                          sx={{ width: { xs: "100%", sm: "auto" } }}
+                                        >
+                                          {hasAlreadyVoted ? "Vote deja enregistre" : "Voter pour ce candidat"}
+                                        </Button>
+                                      </Stack>
+                                    </Box>
+                                  </Stack>
+                                </CardContent>
+                              </Card>
+                            );
+                          })}
                         </Stack>
                       </Stack>
                     </CardContent>
