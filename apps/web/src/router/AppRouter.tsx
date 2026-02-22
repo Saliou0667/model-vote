@@ -12,6 +12,7 @@ import {
   AdminElectionsPage,
   AdminLogsPage,
   AdminMembersPage,
+  AdminScoresPage,
   AdminSectionsPage,
   MemberEligibilityPage,
   MemberCandidateSpacePage,
@@ -74,6 +75,7 @@ export function AppRouter() {
         <Route path="conditions" element={<AdminConditionsPage />} />
         <Route path="contributions" element={<AdminContributionsPage />} />
         <Route path="elections" element={<AdminElectionsPage />} />
+        <Route path="scores" element={<AdminScoresPage />} />
         <Route path="candidates" element={<AdminElectionsPage />} />
         <Route path="vote" element={<MemberVotePage />} />
         <Route path="logs" element={<AdminLogsPage />} />

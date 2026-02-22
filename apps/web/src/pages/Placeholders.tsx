@@ -26,6 +26,7 @@ import {
   Typography,
   useMediaQuery,
 } from "@mui/material";
+import EmojiEventsRoundedIcon from "@mui/icons-material/EmojiEventsRounded";
 import { useTheme } from "@mui/material/styles";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
@@ -61,6 +62,18 @@ const queryKeys = {
   elections: ["elections"] as const,
   memberElections: ["memberElections"] as const,
 };
+
+const ADMIN_SCORES_DISPLAY_ORDER: string[] = [
+  "election-bureau-federal",
+  "election-bureau-secretaire",
+  "election-bureau-tresorier",
+  "election-bureau-conseiller-charge-de-la-formation",
+  "election-bureau-conseiller-charge-de-l-encadrement-des-str",
+  "election-bureau-conseiller-charge-de-la-sensibilisation-co",
+  "election-bureau-conseiller-charge-des-questions-sociales",
+  "election-bureau-secretaire-a-la-securite",
+  "election-bureau-secretaire-au-sport",
+];
 
 const candidatePhotoFallbacks: Array<{ requiredTokens: string[]; forbiddenTokens?: string[]; photoUrl: string }> = [
   { requiredTokens: ["mamoudou", "kourdiou", "diallo"], photoUrl: "/candidates/mamoudou-kourdiou-diallo.png" },
@@ -149,6 +162,11 @@ function electionParticipationRate(election: Election): number {
   const totalVotes = Number(election.totalVotesCast ?? 0);
   if (totalEligible <= 0) return 0;
   return (totalVotes / totalEligible) * 100;
+}
+
+function adminScoresOrderIndex(electionId: string): number {
+  const index = ADMIN_SCORES_DISPLAY_ORDER.indexOf(electionId);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 
 function toDateTimeLocalInput(value: Date | null | undefined): string {
@@ -3781,6 +3799,279 @@ export function AdminElectionsPage() {
           <Button onClick={() => setExportDialogOpen(false)}>Fermer</Button>
         </DialogActions>
       </Dialog>
+    </Stack>
+  );
+}
+
+export function AdminScoresPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const electionsQuery = useQuery({
+    queryKey: queryKeys.elections,
+    queryFn: fetchElections,
+    refetchInterval: 5000,
+  });
+
+  const scoreElections = useMemo(() => {
+    const items = (electionsQuery.data ?? []).filter((election) => election.status !== "draft");
+    return [...items].sort((a, b) => {
+      const aOrder = adminScoresOrderIndex(a.id);
+      const bOrder = adminScoresOrderIndex(b.id);
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      const aStart = a.startAt?.toDate?.()?.getTime?.() ?? 0;
+      const bStart = b.startAt?.toDate?.()?.getTime?.() ?? 0;
+      if (aStart !== bStart) return aStart - bStart;
+      return a.title.localeCompare(b.title, "fr-FR");
+    });
+  }, [electionsQuery.data]);
+
+  const candidatesQueries = useQueries({
+    queries: scoreElections.map((election) => ({
+      queryKey: ["candidates", election.id, "admin-scores"],
+      queryFn: () => fetchCandidates(election.id),
+      enabled: Boolean(election.id),
+    })),
+  });
+
+  const scoresQueries = useQueries({
+    queries: scoreElections.map((election) => ({
+      queryKey: ["electionScores", election.id, "admin-scores"],
+      queryFn: () =>
+        callFunction("getElectionScores", { electionId: election.id }) as Promise<{
+          election: {
+            electionId: string;
+            title: string;
+            status: string;
+            totalEligibleVoters: number;
+            totalVotesCast: number;
+            participationRate: number;
+          };
+          scores: Array<{
+            candidateId: string;
+            displayName: string;
+            sectionName: string;
+            status: string;
+            voteCount: number;
+            percentage: number;
+          }>;
+        }>,
+      enabled: Boolean(election.id),
+      refetchInterval: election.status === "open" ? 5000 : false,
+    })),
+  });
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="h4">Scores</Typography>
+
+      {electionsQuery.error ? <Alert severity="error">{getErrorMessage(electionsQuery.error)}</Alert> : null}
+      {electionsQuery.isLoading ? <Skeleton height={140} /> : null}
+      {!electionsQuery.isLoading && scoreElections.length === 0 ? (
+        <Alert severity="info">Aucune election fermee ou publiee a afficher.</Alert>
+      ) : null}
+
+      {scoreElections.map((election, index) => {
+        const scoresQuery = scoresQueries[index];
+        const candidatesQuery = candidatesQueries[index];
+        const scoresData = scoresQuery?.data as
+          | {
+              election: {
+                electionId: string;
+                title: string;
+                status: string;
+                totalEligibleVoters: number;
+                totalVotesCast: number;
+                participationRate: number;
+              };
+              scores: Array<{
+                candidateId: string;
+                displayName: string;
+                sectionName: string;
+                status: string;
+                voteCount: number;
+                percentage: number;
+              }>;
+            }
+          | undefined;
+        const candidates = (candidatesQuery?.data ?? []) as Candidate[];
+        const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+        const titleParts = splitElectionTitleForDisplay(election.title);
+
+        const rows = (scoresData?.scores ?? []).map((row, rowIndex) => {
+          const linkedCandidate = candidateById.get(row.candidateId);
+          const photoUrl = resolveCandidatePhotoUrl(row.displayName, linkedCandidate?.photoUrl);
+          return {
+            ...row,
+            rank: rowIndex + 1,
+            photoUrl,
+          };
+        });
+
+        return (
+          <Card key={election.id} sx={{ border: "1px solid rgba(16,59,115,0.16)", overflow: "hidden" }}>
+            <CardContent>
+              <Stack spacing={2}>
+                <Box
+                  sx={{
+                    border: "1px solid rgba(16,59,115,0.18)",
+                    borderLeft: "4px solid rgba(16,59,115,0.55)",
+                    borderRight: "4px solid rgba(16,59,115,0.55)",
+                    borderRadius: 2,
+                    p: { xs: 1.5, md: 2 },
+                    textAlign: "center",
+                    background: "linear-gradient(180deg, rgba(16,59,115,0.14), rgba(16,59,115,0.08))",
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    Scrutin
+                  </Typography>
+                  <Typography
+                    variant="h5"
+                    sx={{
+                      fontWeight: 900,
+                      mt: 0.4,
+                      fontSize: { xs: "1.55rem", md: "1.95rem" },
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {titleParts.scrutinTitle}
+                  </Typography>
+                  <Typography
+                    variant="h6"
+                    sx={{
+                      fontWeight: 800,
+                      mt: 0.55,
+                      fontSize: { xs: "1.15rem", md: "1.3rem" },
+                      lineHeight: 1.28,
+                    }}
+                  >
+                    {titleParts.posteTitle}
+                  </Typography>
+                </Box>
+
+                {scoresQuery?.isLoading ? <Skeleton height={120} /> : null}
+                {scoresQuery?.error ? <Alert severity="error">{getErrorMessage(scoresQuery.error)}</Alert> : null}
+                {candidatesQuery?.error ? <Alert severity="warning">{getErrorMessage(candidatesQuery.error)}</Alert> : null}
+
+                {scoresData ? (
+                  <Alert severity="info">
+                    {`${scoresData.election.totalVotesCast} votes / ${scoresData.election.totalEligibleVoters} eligibles (${scoresData.election.participationRate.toFixed(2)}%)`}
+                  </Alert>
+                ) : null}
+
+                {scoresData && rows.length === 0 ? <Alert severity="info">Aucun candidat score pour cette election.</Alert> : null}
+
+                {rows.length > 0 ? (
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(auto-fit, minmax(280px, 340px))",
+                      },
+                      gap: 1.8,
+                      justifyContent: "center",
+                      justifyItems: "center",
+                    }}
+                  >
+                    {rows.map((row) => (
+                      <Card
+                        key={`${election.id}-${row.candidateId}`}
+                        variant="outlined"
+                        sx={{
+                          position: "relative",
+                          width: "100%",
+                          maxWidth: 340,
+                          borderColor: row.rank === 1 ? "rgba(56,130,107,0.55)" : "rgba(16,59,115,0.2)",
+                          background:
+                            row.rank === 1
+                              ? "linear-gradient(180deg, rgba(56,130,107,0.12), rgba(56,130,107,0.04))"
+                              : "linear-gradient(180deg, rgba(16,59,115,0.06), rgba(16,59,115,0.02))",
+                          aspectRatio: "1 / 1",
+                          minHeight: { xs: 290, sm: 320 },
+                          boxShadow: row.rank === 1 ? "0 10px 22px rgba(56,130,107,0.18)" : "0 8px 18px rgba(16,59,115,0.10)",
+                        }}
+                      >
+                        {row.rank === 1 ? (
+                          <Chip
+                            icon={<EmojiEventsRoundedIcon />}
+                            label="Vainqueur"
+                            size="small"
+                            sx={{
+                              position: "absolute",
+                              top: 10,
+                              right: 10,
+                              zIndex: 2,
+                              color: "white",
+                              fontWeight: 800,
+                              border: "1px solid rgba(255,255,255,0.35)",
+                              background: "linear-gradient(135deg, #D4951A 0%, #F1C45B 45%, #B87317 100%)",
+                              "& .MuiChip-icon": { color: "white" },
+                            }}
+                          />
+                        ) : null}
+                        <CardContent
+                          sx={{
+                            p: 1.9,
+                            "&:last-child": { pb: 1.9 },
+                            height: "100%",
+                          }}
+                        >
+                          <Stack spacing={1.6} sx={{ height: "100%", justifyContent: "space-between" }}>
+                            <Stack direction="row" spacing={1.4} alignItems="center">
+                              <Avatar
+                                src={row.photoUrl}
+                                alt={row.displayName}
+                                sx={{
+                                  width: isMobile ? 94 : 110,
+                                  height: isMobile ? 94 : 110,
+                                  border: row.rank === 1 ? "3px solid rgba(56,130,107,0.55)" : "3px solid rgba(16,59,115,0.22)",
+                                  bgcolor: "rgba(16,59,115,0.08)",
+                                }}
+                              >
+                                {row.displayName.charAt(0)}
+                              </Avatar>
+                              <Box minWidth={0}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 800 }} noWrap>
+                                  {row.displayName}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary" noWrap>
+                                  {row.sectionName || "-"}
+                                </Typography>
+                              </Box>
+                            </Stack>
+
+                            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" justifyContent="space-between">
+                              <Chip
+                                size="small"
+                                color={row.rank === 1 ? "success" : "default"}
+                                label={row.rank === 1 ? "1er" : `${row.rank}e`}
+                              />
+                              <Chip size="small" variant="outlined" label={`${row.voteCount} vote${row.voteCount > 1 ? "s" : ""}`} />
+                              <Chip size="small" variant="outlined" label={`${row.percentage.toFixed(2)}%`} />
+                            </Stack>
+
+                            <Box sx={{ height: 10, borderRadius: 10, bgcolor: "rgba(16,59,115,0.14)", overflow: "hidden" }}>
+                              <Box
+                                sx={{
+                                  height: "100%",
+                                  width: `${Math.max(0, Math.min(100, row.percentage))}%`,
+                                  bgcolor: row.rank === 1 ? "success.main" : "primary.main",
+                                  transition: "width 220ms ease",
+                                }}
+                              />
+                            </Box>
+                          </Stack>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </Box>
+                ) : null}
+              </Stack>
+            </CardContent>
+          </Card>
+        );
+      })}
     </Stack>
   );
 }
