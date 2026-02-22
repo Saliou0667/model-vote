@@ -1849,7 +1849,8 @@ export const openElection = onCall(async (request) => {
     minSeniority?: number;
     allowedSectionIds?: string[] | null;
   };
-  if (election.status !== "draft") {
+  const previousStatus = String(election.status ?? "draft");
+  if (previousStatus !== "draft" && previousStatus !== "closed") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
   }
 
@@ -1881,16 +1882,17 @@ export const openElection = onCall(async (request) => {
   batch.update(electionRef, {
     status: "open",
     lockedAt: FieldValue.serverTimestamp(),
+    closedAt: null,
     totalEligibleVoters,
     updatedAt: FieldValue.serverTimestamp(),
   });
   writeAuditBatch(batch, {
-    action: "election.open",
+    action: previousStatus === "closed" ? "election.reopen" : "election.open",
     actorId: actorUid,
     actorRole: actorRole ?? "admin",
     targetType: "election",
     targetId: electionId,
-    details: { totalEligibleVoters },
+    details: { totalEligibleVoters, previousStatus },
   });
 
   await batch.commit();

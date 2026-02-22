@@ -11,6 +11,23 @@ import type {
   Section,
 } from "../types/models";
 
+const MEMBER_ELECTION_DISPLAY_ORDER: string[] = [
+  "election-bureau-federal",
+  "election-bureau-secretaire",
+  "election-bureau-tresorier",
+  "election-bureau-conseiller-charge-de-la-formation",
+  "election-bureau-conseiller-charge-de-l-encadrement-des-str",
+  "election-bureau-conseiller-charge-de-la-sensibilisation-co",
+  "election-bureau-conseiller-charge-des-questions-sociales",
+  "election-bureau-secretaire-a-la-securite",
+  "election-bureau-secretaire-au-sport",
+];
+
+function memberElectionOrderIndex(electionId: string): number {
+  const index = MEMBER_ELECTION_DISPLAY_ORDER.indexOf(electionId);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
 function toSection(id: string, data: DocumentData): Section {
   return {
     id,
@@ -188,11 +205,16 @@ export async function fetchMemberVisibleElections(): Promise<Election[]> {
   });
 
   return elections.sort((a, b) => {
+    const aOrder = memberElectionOrderIndex(a.id);
+    const bOrder = memberElectionOrderIndex(b.id);
+    if (aOrder !== bOrder) return aOrder - bOrder;
+
     const aDate = a.startAt?.toDate?.();
     const bDate = b.startAt?.toDate?.();
     const aTime = aDate ? aDate.getTime() : 0;
     const bTime = bDate ? bDate.getTime() : 0;
-    return bTime - aTime;
+    if (bTime !== aTime) return bTime - aTime;
+    return a.title.localeCompare(b.title, "fr-FR");
   });
 }
 

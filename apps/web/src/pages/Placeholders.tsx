@@ -3159,9 +3159,11 @@ export function AdminElectionsPage() {
                             size="small"
                             variant="outlined"
                             onClick={() => openElectionMutation.mutate(election.id)}
-                            disabled={election.status !== "draft" || openElectionMutation.isPending}
+                            disabled={
+                              (election.status !== "draft" && election.status !== "closed") || openElectionMutation.isPending
+                            }
                           >
-                            Ouvrir
+                            {election.status === "closed" ? "Reouvrir" : "Ouvrir"}
                           </Button>
                           <Button
                             size="small"
@@ -3265,9 +3267,11 @@ export function AdminElectionsPage() {
                               size="small"
                               variant="outlined"
                               onClick={() => openElectionMutation.mutate(election.id)}
-                              disabled={election.status !== "draft" || openElectionMutation.isPending}
+                              disabled={
+                                (election.status !== "draft" && election.status !== "closed") || openElectionMutation.isPending
+                              }
                             >
-                              Ouvrir
+                              {election.status === "closed" ? "Reouvrir" : "Ouvrir"}
                             </Button>
                             <Button
                               size="small"
