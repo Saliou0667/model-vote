@@ -7,6 +7,7 @@ import DashboardRoundedIcon from "@mui/icons-material/DashboardRounded";
 import Groups2RoundedIcon from "@mui/icons-material/Groups2Rounded";
 import HistoryEduRoundedIcon from "@mui/icons-material/HistoryEduRounded";
 import HowToRegRoundedIcon from "@mui/icons-material/HowToRegRounded";
+import HowToVoteRoundedIcon from "@mui/icons-material/HowToVoteRounded";
 import HubRoundedIcon from "@mui/icons-material/HubRounded";
 import TuneRoundedIcon from "@mui/icons-material/TuneRounded";
 import {
@@ -56,6 +57,10 @@ export function AdminLayout() {
       { label: "Logs", mobileLabel: "Logs", to: "/admin/logs", icon: <HistoryEduRoundedIcon fontSize="small" /> },
     ];
 
+    if (role === "admin") {
+      items.push({ label: "Vote", mobileLabel: "Vote", to: "/admin/vote", icon: <HowToVoteRoundedIcon fontSize="small" /> });
+    }
+
     if (role === "admin" || role === "superadmin") {
       items.push({
         label: "Admins",
@@ -84,7 +89,7 @@ export function AdminLayout() {
   const mobileNavItems = useMemo(
     () =>
       navItems.filter((item) =>
-        ["/admin", "/admin/members", "/admin/candidates", "/admin/conditions"].includes(item.to),
+        ["/admin", "/admin/members", "/admin/candidates", "/admin/conditions", "/admin/vote"].includes(item.to),
       ),
     [navItems],
   );

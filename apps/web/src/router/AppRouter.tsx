@@ -75,6 +75,7 @@ export function AppRouter() {
         <Route path="contributions" element={<AdminContributionsPage />} />
         <Route path="elections" element={<AdminElectionsPage />} />
         <Route path="candidates" element={<AdminElectionsPage />} />
+        <Route path="vote" element={<MemberVotePage />} />
         <Route path="logs" element={<AdminLogsPage />} />
         <Route
           path="admins"

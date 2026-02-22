@@ -726,7 +726,7 @@ export const createMember = onCall(async (request) => {
         status,
         registrationSource: "admin_created",
         votingApprovedByAdmin: true,
-        passwordChangeRequired: true,
+        passwordChangeRequired: false,
         passwordUpdatedAt: null,
         emailVerified: false,
         profileCompleted: isProfileCompleted({ firstName, lastName, city, phone }),
@@ -1930,6 +1930,8 @@ export const closeElection = onCall(async (request) => {
 export const castVote = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["member", "admin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const candidateId = requireString(request.data?.candidateId, "candidateId");
@@ -2023,7 +2025,7 @@ export const castVote = onCall(async (request) => {
     writeAuditTx(tx, {
       action: "vote.cast",
       actorId: actorUid,
-      actorRole: "member",
+      actorRole: actorRole ?? "member",
       targetType: "election",
       targetId: electionId,
       details: { memberId: actorUid },

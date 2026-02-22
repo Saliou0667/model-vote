@@ -1,5 +1,5 @@
 import { Box, CircularProgress } from "@mui/material";
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useAuth } from "../hooks/useAuth";
 
@@ -24,23 +24,16 @@ export function AppEntryRedirect() {
   }
   if (role === "admin" || role === "superadmin") return <Navigate to="/admin" replace />;
   if (profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
-  if (profile?.passwordChangeRequired === true) return <Navigate to="/member/profile" replace />;
   return <Navigate to="/member/vote" replace />;
 }
 
 export function RequireAuth({ children }: GuardProps) {
-  const location = useLocation();
   const { loading, user, role, profile } = useAuth();
   if (loading) return <Loader />;
   if (!user) return <Navigate to="/auth/login" replace />;
+  if (role === "superadmin") return <Navigate to="/admin" replace />;
+  if (role === "admin" && profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
   if (role === "member" && profile?.status !== "active") return <Navigate to="/pending-approval" replace />;
-  if (
-    role === "member" &&
-    profile?.passwordChangeRequired === true &&
-    !location.pathname.startsWith("/member/profile")
-  ) {
-    return <Navigate to="/member/profile" replace />;
-  }
   return <>{children}</>;
 }
 
