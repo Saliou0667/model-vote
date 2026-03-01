@@ -7,6 +7,7 @@ import { Link as RouterLink, Navigate, useNavigate } from "react-router-dom";
 import { z } from "zod";
 import { callFunction, getErrorMessage } from "../api/callables";
 import { useAuth } from "../hooks/useAuth";
+import { DEFAULT_FEDERATION_ID } from "../utils/federation";
 
 const loginSchema = z.object({
   email: z.string().email("Email invalide"),
@@ -31,6 +32,7 @@ const registerSchema = z
 type LoginValues = z.infer<typeof loginSchema>;
 type RegisterValues = z.infer<typeof registerSchema>;
 type PublicSection = { id: string; name: string; city: string; region?: string };
+type PublicFederation = { id: string; name: string; countryCode?: string };
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -86,11 +88,26 @@ export function RegisterPage() {
   const { signUp } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [federationId, setFederationId] = useState(DEFAULT_FEDERATION_ID);
   const [sectionId, setSectionId] = useState("");
-  const sectionsQuery = useQuery({
-    queryKey: ["publicSections"],
+  const federationsQuery = useQuery({
+    queryKey: ["publicFederations"],
     queryFn: async () =>
-      (await callFunction<Record<string, never>, { sections: PublicSection[] }>("listPublicSections", {})).sections,
+      (await callFunction<Record<string, never>, { federations: PublicFederation[] }>("listPublicFederations", {}))
+        .federations,
+  });
+  const federationOptions = federationsQuery.data ?? [];
+  const effectiveFederationId = federationOptions.some((federation) => federation.id === federationId)
+    ? federationId
+    : (federationOptions[0]?.id ?? federationId);
+  const sectionsQuery = useQuery({
+    queryKey: ["publicSections", effectiveFederationId],
+    queryFn: async () =>
+      (
+        await callFunction<{ federationId: string }, { sections: PublicSection[] }>("listPublicSections", {
+          federationId: effectiveFederationId,
+        })
+      ).sections,
   });
   const {
     register,
@@ -105,6 +122,7 @@ export function RegisterPage() {
       await signUp({
         email: values.email,
         password: values.password,
+        federationId: effectiveFederationId,
         firstName: values.firstName,
         lastName: values.lastName,
         city: values.city,
@@ -124,7 +142,26 @@ export function RegisterPage() {
       <Typography color="text.secondary">Creez votre compte membre. Validation finale par un administrateur.</Typography>
       {error ? <Alert severity="error">{error}</Alert> : null}
       {success ? <Alert severity="success">{success}</Alert> : null}
+      {federationsQuery.error ? <Alert severity="warning">{getErrorMessage(federationsQuery.error)}</Alert> : null}
       {sectionsQuery.error ? <Alert severity="warning">{getErrorMessage(sectionsQuery.error)}</Alert> : null}
+      <FormControl fullWidth>
+        <InputLabel id="register-federation">Federation</InputLabel>
+        <Select
+          labelId="register-federation"
+          label="Federation"
+          value={effectiveFederationId}
+          onChange={(event) => {
+            setFederationId(event.target.value);
+            setSectionId("");
+          }}
+        >
+          {federationOptions.map((federation) => (
+            <MenuItem key={federation.id} value={federation.id}>
+              {federation.name}
+            </MenuItem>
+          ))}
+        </Select>
+      </FormControl>
       <TextField
         label="Prenom"
         {...register("firstName")}
@@ -249,11 +286,16 @@ export function PendingApprovalPage() {
   const [sectionId, setSectionId] = useState<string | undefined>(undefined);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const memberFederationId = profile?.federationId ?? DEFAULT_FEDERATION_ID;
 
   const sectionsQuery = useQuery({
-    queryKey: ["publicSections"],
+    queryKey: ["publicSections", memberFederationId],
     queryFn: async () =>
-      (await callFunction<Record<string, never>, { sections: PublicSection[] }>("listPublicSections", {})).sections,
+      (
+        await callFunction<{ federationId: string }, { sections: PublicSection[] }>("listPublicSections", {
+          federationId: memberFederationId,
+        })
+      ).sections,
   });
 
   const updateProfileMutation = useMutation({

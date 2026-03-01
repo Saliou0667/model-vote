@@ -8,6 +8,7 @@ export interface MemberProfile {
   email: string;
   role: UserRole;
   status: MemberStatus;
+  federationId?: string;
   registrationSource?: "self_registration" | "admin_created";
   votingApprovedByAdmin?: boolean;
   firstName?: string;
@@ -21,6 +22,7 @@ export interface MemberProfile {
 export type SignUpPayload = {
   email: string;
   password: string;
+  federationId: string;
   firstName: string;
   lastName: string;
   city: string;
@@ -32,10 +34,13 @@ export interface AuthContextValue {
   user: User | null;
   role: UserRole;
   profile: MemberProfile | null;
+  federationId: string;
+  federationScopeId: string;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (payload: SignUpPayload) => Promise<void>;
   signOutUser: () => Promise<void>;
   sendVerification: () => Promise<void>;
   refreshAuthState: () => Promise<void>;
+  setFederationScope: (federationId: string) => void;
 }

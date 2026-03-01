@@ -1,6 +1,6 @@
 # CHECKPOINT.md - Point de reprise operationnel
 
-**Derniere mise a jour:** 2026-02-07  
+**Derniere mise a jour:** 2026-03-01  
 **Etat de reprise:** READY
 
 ---
@@ -22,7 +22,14 @@
   - M6 backend: resultats/exports/logs/audit
   - M6 frontend: resultats membre, logs admin, gestion admins, audit superadmin
   - hardening: Playwright smoke + workflow CI GitHub
-  - validations finales OK: `pnpm format:check`, `pnpm lint`, `pnpm test`, `pnpm typecheck`, `pnpm build`, `pnpm e2e`
+  - fusion Belgique: poste "Secretaire au sport" + "Secretaire a la securite" fusionne dans l'import, la lecture web et la prod
+  - front membre: menu "Scores" masque tant qu'aucun resultat n'est publie pour la federation
+  - front membre Belgique: l'ecran "Scores" republie utilise a nouveau l'UI riche avec photos/cartes une fois les resultats publies
+  - vote/resultats: un seul libelle "Bulletin blanc", option de vote blanc ajoutee, carte "Bulletin blanc" restauree dans les scores/resultats
+  - scores/resultats: les pourcentages candidat et bulletin blanc sont calcules sur le total des bulletins
+  - Belgique prod: reset complet des donnees de vote/elections, scrutins remis en `draft` avec ouverture planifiee au `2026-03-01 08:00:00 +01:00` et fermeture au `2026-03-01 22:00:00 +01:00`
+  - Belgique prod: scheduler Functions deploye pour ouvrir/fermer automatiquement les scrutins belges sans toucher a la France
+  - validations recentes OK: `pnpm typecheck`, `pnpm build`, `firebase deploy --project model-vote-fr-2026 --only functions`, `node functions/scripts/reset-belgique-elections.cjs`
 - Prochaine etape immediate:
   - optionnel: tests functions avec couverture cible + optimisation bundle frontend
 

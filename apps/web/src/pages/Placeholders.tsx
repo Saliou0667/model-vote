@@ -74,6 +74,9 @@ const ADMIN_SCORES_DISPLAY_ORDER: string[] = [
   "election-bureau-secretaire-a-la-securite",
   "election-bureau-secretaire-au-sport",
 ];
+const BLANK_BALLOT_ID = "bulletin-blanc";
+const BLANK_BALLOT_LABEL = "Bulletin blanc";
+const BLANK_BALLOT_SECTION_LABEL = "Choix sans candidat";
 
 const candidatePhotoFallbacks: Array<{ requiredTokens: string[]; forbiddenTokens?: string[]; photoUrl: string }> = [
   { requiredTokens: ["mamoudou", "kourdiou", "diallo"], photoUrl: "/candidates/mamoudou-kourdiou-diallo.png" },
@@ -141,6 +144,50 @@ function splitElectionTitleForDisplay(title: string): { scrutinTitle: string; po
   }
 
   return { scrutinTitle: "Scrutin", posteTitle: normalized };
+}
+
+type ElectionScoreSummary = {
+  totalEligibleVoters: number;
+  totalVotesCast: number;
+  participationRate: number;
+  validVotesCount?: number;
+  blankVotesCount?: number;
+};
+
+function formatElectionScoreSummary(election: ElectionScoreSummary): string {
+  const totalVotesCast = Number(election.totalVotesCast ?? 0);
+  const blankVotesCount = Number(election.blankVotesCount ?? 0);
+  const validVotesCount = Number(election.validVotesCount ?? Math.max(0, totalVotesCast - blankVotesCount));
+  return `${totalVotesCast} votes / ${Number(election.totalEligibleVoters ?? 0)} eligibles (${Number(
+    election.participationRate ?? 0,
+  ).toFixed(2)}%) - votes candidats: ${validVotesCount} - bulletins blancs: ${blankVotesCount}`;
+}
+
+function createBlankBallotChoice(): Candidate {
+  return {
+    id: BLANK_BALLOT_ID,
+    memberId: "",
+    displayName: BLANK_BALLOT_LABEL,
+    sectionName: BLANK_BALLOT_SECTION_LABEL,
+    bio: "Exprimez un choix blanc si aucun candidat ne correspond a votre vote.",
+    projectSummary: "Le bulletin blanc est comptabilise separement dans les resultats.",
+    status: "validated",
+  };
+}
+
+function createBlankBallotScoreRow(election: ElectionScoreSummary) {
+  const blankVotesCount = Number(election.blankVotesCount ?? 0);
+  const totalVotesCast = Number(election.totalVotesCast ?? 0);
+  return {
+    candidateId: BLANK_BALLOT_ID,
+    displayName: BLANK_BALLOT_LABEL,
+    sectionName: BLANK_BALLOT_SECTION_LABEL,
+    voteCount: blankVotesCount,
+    percentage: totalVotesCast > 0 ? (blankVotesCount / totalVotesCast) * 100 : 0,
+    photoUrl: undefined as string | undefined,
+    rank: null as number | null,
+    isBlankBallot: true,
+  };
 }
 
 function memberStatusChipColor(status: Member["status"]): "warning" | "success" | "error" {
@@ -824,6 +871,7 @@ export function MemberVotePage() {
     openElections.forEach((election) => map.set(election.id, election.title));
     return map;
   }, [openElections]);
+  const blankBallotChoice = useMemo(() => createBlankBallotChoice(), []);
 
   const pendingElectionId = pendingVote?.electionId ?? "";
   const pendingCandidate = pendingVote?.candidate ?? null;
@@ -877,7 +925,9 @@ export function MemberVotePage() {
                 const voteStatus = voteStatusByElectionId.get(election.id);
                 const hasAlreadyVoted = Boolean(voteStatus?.hasVoted);
                 const votedCandidateName =
-                  voteStatus?.candidateDisplayName || voteStatus?.candidateId || "candidat inconnu";
+                  voteStatus?.candidateDisplayName ||
+                  (voteStatus?.candidateId === BLANK_BALLOT_ID ? BLANK_BALLOT_LABEL : voteStatus?.candidateId) ||
+                  "candidat inconnu";
                 const { scrutinTitle, posteTitle } = splitElectionTitleForDisplay(election.title);
 
                 return (
@@ -965,7 +1015,7 @@ export function MemberVotePage() {
                         {candidatesQuery.error ? <Alert severity="error">{getErrorMessage(candidatesQuery.error)}</Alert> : null}
                         {candidatesQuery.isLoading ? <Skeleton height={120} /> : null}
                         {!candidatesQuery.isLoading && electionCandidates.length === 0 ? (
-                          <Alert severity="info">Aucun candidat valide disponible pour cette election.</Alert>
+                          <Alert severity="info">Aucun candidat valide disponible pour cette election. Vous pouvez voter blanc.</Alert>
                         ) : null}
 
                         <Stack spacing={1.2}>
@@ -1060,6 +1110,74 @@ export function MemberVotePage() {
                               </Card>
                             );
                           })}
+                          <Card variant="outlined" sx={{ borderStyle: "dashed", borderColor: "rgba(16,59,115,0.28)" }}>
+                            <CardContent>
+                              <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between">
+                                <Box
+                                  sx={{
+                                    width: { xs: "100%", md: 220 },
+                                    minWidth: { md: 220 },
+                                    display: "flex",
+                                    justifyContent: "center",
+                                    alignItems: "flex-start",
+                                  }}
+                                >
+                                  <Avatar
+                                    variant="rounded"
+                                    sx={{
+                                      width: { xs: 96, md: 116 },
+                                      height: { xs: 96, md: 116 },
+                                      bgcolor: "rgba(16,59,115,0.10)",
+                                      color: "primary.main",
+                                      fontWeight: 800,
+                                      fontSize: 28,
+                                      border: "1px solid rgba(16,59,115,0.2)",
+                                    }}
+                                  >
+                                    B
+                                  </Avatar>
+                                </Box>
+                                <Stack spacing={1.1} sx={{ maxWidth: 760 }}>
+                                  <Box>
+                                    <Typography variant="subtitle1">{BLANK_BALLOT_LABEL}</Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                      {BLANK_BALLOT_SECTION_LABEL}
+                                    </Typography>
+                                  </Box>
+                                  <Box>
+                                    <Typography variant="subtitle2">Choix</Typography>
+                                    <Typography variant="body2">
+                                      Selectionnez cette option si vous souhaitez participer au scrutin sans soutenir un candidat.
+                                    </Typography>
+                                  </Box>
+                                  <Box>
+                                    <Typography variant="subtitle2">Resultat</Typography>
+                                    <Typography variant="body2">
+                                      Le bulletin blanc sera affiche separement dans les resultats, avec sa propre carte.
+                                    </Typography>
+                                  </Box>
+                                </Stack>
+                                <Box sx={{ alignSelf: { xs: "stretch", md: "center" }, width: { xs: "100%", md: "auto" } }}>
+                                  <Stack spacing={1} alignItems={{ xs: "flex-start", md: "flex-end" }}>
+                                    {hasAlreadyVoted && voteStatus?.candidateId === BLANK_BALLOT_ID ? (
+                                      <Chip label="Votre vote" color="success" />
+                                    ) : null}
+                                    <Button
+                                      variant="outlined"
+                                      onClick={() => {
+                                        if (hasAlreadyVoted) return;
+                                        setPendingVote({ electionId: election.id, candidate: blankBallotChoice });
+                                      }}
+                                      disabled={!eligibility?.eligible || hasAlreadyVoted}
+                                      sx={{ width: { xs: "100%", sm: "auto" } }}
+                                    >
+                                      {hasAlreadyVoted ? "Vote deja enregistre" : "Voter blanc"}
+                                    </Button>
+                                  </Stack>
+                                </Box>
+                              </Stack>
+                            </CardContent>
+                          </Card>
                         </Stack>
                       </Stack>
                     </CardContent>
@@ -1081,7 +1199,9 @@ export function MemberVotePage() {
             {`Poste: ${electionTitleById.get(pendingElectionId) ?? pendingElectionId}`}
           </Typography>
           <Typography mt={1}>
-            {`Vous allez voter pour ${pendingCandidate?.displayName}. Cette action est definitive.`}
+            {pendingCandidate?.id === BLANK_BALLOT_ID
+              ? "Vous allez enregistrer un bulletin blanc. Cette action est definitive."
+              : `Vous allez voter pour ${pendingCandidate?.displayName}. Cette action est definitive.`}
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -1116,7 +1236,10 @@ export function MemberResultsPage() {
         election: {
           title: string;
           participationRate: number;
+          totalEligibleVoters: number;
           totalVotesCast: number;
+          validVotesCount: number;
+          blankVotesCount: number;
         };
         results: Array<{
           rank: number;
@@ -1128,6 +1251,26 @@ export function MemberResultsPage() {
     },
     enabled: Boolean(activeElectionId),
   });
+  const resultRows = useMemo(() => {
+    const candidateRows = (resultsQuery.data?.results ?? []).map((row) => ({
+      ...row,
+      isBlankBallot: false,
+    }));
+    if (!resultsQuery.data) return candidateRows;
+    return [
+      ...candidateRows,
+      {
+        rank: 0,
+        displayName: BLANK_BALLOT_LABEL,
+        voteCount: Number(resultsQuery.data.election.blankVotesCount ?? 0),
+        percentage:
+          Number(resultsQuery.data.election.totalVotesCast ?? 0) > 0
+            ? (Number(resultsQuery.data.election.blankVotesCount ?? 0) / Number(resultsQuery.data.election.totalVotesCast ?? 0)) * 100
+            : 0,
+        isBlankBallot: true,
+      },
+    ];
+  }, [resultsQuery.data]);
 
   return (
     <Stack spacing={2}>
@@ -1178,15 +1321,17 @@ export function MemberResultsPage() {
           <CardContent>
             <Stack spacing={2}>
               <Alert severity="info">
-                {`Participation: ${resultsQuery.data.election.participationRate.toFixed(2)}% (${resultsQuery.data.election.totalVotesCast} votes)`}
+                {formatElectionScoreSummary(resultsQuery.data.election)}
               </Alert>
               {isMobile ? (
                 <Stack spacing={1.2}>
-                  {resultsQuery.data.results.map((row) => (
+                  {resultRows.map((row) => (
                     <Card key={`${row.rank}-${row.displayName}`} variant="outlined">
                       <CardContent sx={{ py: 1.5 }}>
                         <Stack spacing={0.6}>
-                          <Typography variant="subtitle2">{`#${row.rank} - ${row.displayName}`}</Typography>
+                          <Typography variant="subtitle2">
+                            {row.isBlankBallot ? row.displayName : `#${row.rank} - ${row.displayName}`}
+                          </Typography>
                           <Typography variant="body2">{`Votes: ${row.voteCount}`}</Typography>
                           <Typography variant="body2">{`Pourcentage: ${row.percentage.toFixed(2)}%`}</Typography>
                         </Stack>
@@ -1206,9 +1351,9 @@ export function MemberResultsPage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {resultsQuery.data.results.map((row) => (
+                      {resultRows.map((row) => (
                         <TableRow key={`${row.rank}-${row.displayName}`}>
-                          <TableCell>{row.rank}</TableCell>
+                          <TableCell>{row.isBlankBallot ? "-" : row.rank}</TableCell>
                           <TableCell>{row.displayName}</TableCell>
                           <TableCell>{row.voteCount}</TableCell>
                           <TableCell>{row.percentage.toFixed(2)}</TableCell>
@@ -1223,6 +1368,295 @@ export function MemberResultsPage() {
         </Card>
       ) : null}
       {resultsQuery.error ? <Alert severity="error">{getErrorMessage(resultsQuery.error)}</Alert> : null}
+    </Stack>
+  );
+}
+
+export function MemberScoresPage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const electionsQuery = useQuery({
+    queryKey: queryKeys.memberElections,
+    queryFn: fetchMemberVisibleElections,
+  });
+
+  const publishedElections = useMemo(() => {
+    const items = (electionsQuery.data ?? []).filter((election) => election.status === "published");
+    return [...items].sort((a, b) => {
+      const aOrder = adminScoresOrderIndex(a.id);
+      const bOrder = adminScoresOrderIndex(b.id);
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      const aStart = a.startAt?.toDate?.()?.getTime?.() ?? 0;
+      const bStart = b.startAt?.toDate?.()?.getTime?.() ?? 0;
+      if (aStart !== bStart) return aStart - bStart;
+      return a.title.localeCompare(b.title, "fr-FR");
+    });
+  }, [electionsQuery.data]);
+
+  const candidatesQueries = useQueries({
+    queries: publishedElections.map((election) => ({
+      queryKey: ["candidates", election.id, "member-scores"],
+      queryFn: () => fetchCandidates(election.id),
+      enabled: Boolean(election.id),
+    })),
+  });
+
+  const resultsQueries = useQueries({
+    queries: publishedElections.map((election) => ({
+      queryKey: ["results", election.id, "member-scores"],
+      queryFn: () =>
+        callFunction("getResults", { electionId: election.id }) as Promise<{
+          election: {
+            electionId: string;
+            title: string;
+            status: string;
+            totalEligibleVoters: number;
+            totalVotesCast: number;
+            participationRate: number;
+            validVotesCount: number;
+            blankVotesCount: number;
+          };
+          results: Array<{
+            id: string;
+            rank: number;
+            displayName: string;
+            voteCount: number;
+            percentage: number;
+          }>;
+        }>,
+      enabled: Boolean(election.id),
+    })),
+  });
+
+  return (
+    <Stack spacing={2}>
+      <Typography variant="h4">Scores</Typography>
+
+      {electionsQuery.error ? <Alert severity="error">{getErrorMessage(electionsQuery.error)}</Alert> : null}
+      {electionsQuery.isLoading ? <Skeleton height={140} /> : null}
+      {!electionsQuery.isLoading && publishedElections.length === 0 ? (
+        <Alert severity="info">Aucun resultat publie.</Alert>
+      ) : null}
+
+      {publishedElections.map((election, index) => {
+        const resultsQuery = resultsQueries[index];
+        const candidatesQuery = candidatesQueries[index];
+        const resultsData = resultsQuery?.data as
+          | {
+              election: {
+                electionId: string;
+                title: string;
+                status: string;
+                totalEligibleVoters: number;
+                totalVotesCast: number;
+                participationRate: number;
+                validVotesCount: number;
+                blankVotesCount: number;
+              };
+              results: Array<{
+                id: string;
+                rank: number;
+                displayName: string;
+                voteCount: number;
+                percentage: number;
+              }>;
+            }
+          | undefined;
+        const candidates = (candidatesQuery?.data ?? []) as Candidate[];
+        const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+        const titleParts = splitElectionTitleForDisplay(election.title);
+
+        const rows = (resultsData?.results ?? []).map((row, rowIndex) => {
+          const linkedCandidate = candidateById.get(row.id);
+          const photoUrl = resolveCandidatePhotoUrl(row.displayName, linkedCandidate?.photoUrl);
+          return {
+            ...row,
+            candidateId: row.id,
+            rank: Number(row.rank ?? rowIndex + 1),
+            sectionName: linkedCandidate?.sectionName ?? "",
+            photoUrl,
+            isBlankBallot: false,
+          };
+        });
+        const displayRows = resultsData ? [...rows, createBlankBallotScoreRow(resultsData.election)] : rows;
+
+        return (
+          <Card key={election.id} sx={{ border: "1px solid rgba(16,59,115,0.16)", overflow: "hidden" }}>
+            <CardContent>
+              <Stack spacing={2}>
+                <Box
+                  sx={{
+                    border: "1px solid rgba(16,59,115,0.18)",
+                    borderLeft: "4px solid rgba(16,59,115,0.55)",
+                    borderRight: "4px solid rgba(16,59,115,0.55)",
+                    borderRadius: 2,
+                    p: { xs: 1.5, md: 2 },
+                    textAlign: "center",
+                    background: "linear-gradient(180deg, rgba(16,59,115,0.14), rgba(16,59,115,0.08))",
+                  }}
+                >
+                  <Typography variant="body2" color="text.secondary">
+                    Scrutin
+                  </Typography>
+                  <Typography
+                    variant="h5"
+                    sx={{
+                      fontWeight: 900,
+                      mt: 0.4,
+                      fontSize: { xs: "1.55rem", md: "1.95rem" },
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {titleParts.scrutinTitle}
+                  </Typography>
+                  <Typography
+                    variant="h6"
+                    sx={{
+                      fontWeight: 800,
+                      mt: 0.55,
+                      fontSize: { xs: "1.15rem", md: "1.3rem" },
+                      lineHeight: 1.28,
+                    }}
+                  >
+                    {titleParts.posteTitle}
+                  </Typography>
+                </Box>
+
+                {resultsQuery?.isLoading ? <Skeleton height={120} /> : null}
+                {resultsQuery?.error ? <Alert severity="error">{getErrorMessage(resultsQuery.error)}</Alert> : null}
+                {candidatesQuery?.error ? <Alert severity="warning">{getErrorMessage(candidatesQuery.error)}</Alert> : null}
+
+                {resultsData ? (
+                  <Alert severity="info">{formatElectionScoreSummary(resultsData.election)}</Alert>
+                ) : null}
+
+                {resultsData && rows.length === 0 ? <Alert severity="info">Aucun score candidat pour cette election.</Alert> : null}
+
+                {displayRows.length > 0 ? (
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: {
+                        xs: "1fr",
+                        sm: "repeat(auto-fit, minmax(280px, 340px))",
+                      },
+                      gap: 1.8,
+                      justifyContent: "center",
+                      justifyItems: "center",
+                    }}
+                  >
+                    {displayRows.map((row) => (
+                      <Card
+                        key={`${election.id}-${row.candidateId}`}
+                        variant="outlined"
+                        sx={{
+                          position: "relative",
+                          width: "100%",
+                          maxWidth: 340,
+                          borderColor: row.isBlankBallot
+                            ? "rgba(16,59,115,0.28)"
+                            : row.rank === 1
+                              ? "rgba(56,130,107,0.55)"
+                              : "rgba(16,59,115,0.2)",
+                          background:
+                            row.isBlankBallot
+                              ? "linear-gradient(180deg, rgba(16,59,115,0.10), rgba(16,59,115,0.03))"
+                              : row.rank === 1
+                              ? "linear-gradient(180deg, rgba(56,130,107,0.12), rgba(56,130,107,0.04))"
+                              : "linear-gradient(180deg, rgba(16,59,115,0.06), rgba(16,59,115,0.02))",
+                          aspectRatio: "1 / 1",
+                          minHeight: { xs: 290, sm: 320 },
+                          boxShadow: row.rank === 1 ? "0 10px 22px rgba(56,130,107,0.18)" : "0 8px 18px rgba(16,59,115,0.10)",
+                        }}
+                      >
+                        {row.rank === 1 && !row.isBlankBallot ? (
+                          <Chip
+                            icon={<EmojiEventsRoundedIcon />}
+                            label="Vainqueur"
+                            size="small"
+                            sx={{
+                              position: "absolute",
+                              top: 10,
+                              right: 10,
+                              zIndex: 2,
+                              color: "white",
+                              fontWeight: 800,
+                              border: "1px solid rgba(255,255,255,0.35)",
+                              background: "linear-gradient(135deg, #D4951A 0%, #F1C45B 45%, #B87317 100%)",
+                              "& .MuiChip-icon": { color: "white" },
+                            }}
+                          />
+                        ) : null}
+                        <CardContent
+                          sx={{
+                            p: 1.9,
+                            "&:last-child": { pb: 1.9 },
+                            height: "100%",
+                          }}
+                        >
+                          <Stack spacing={1.6} sx={{ height: "100%", justifyContent: "space-between" }}>
+                            <Stack direction="row" spacing={1.4} alignItems="center">
+                              <Avatar
+                                src={row.photoUrl}
+                                alt={row.displayName}
+                                sx={{
+                                  width: isMobile ? 94 : 110,
+                                  height: isMobile ? 94 : 110,
+                                  border: row.isBlankBallot
+                                    ? "3px solid rgba(16,59,115,0.24)"
+                                    : row.rank === 1
+                                      ? "3px solid rgba(56,130,107,0.55)"
+                                      : "3px solid rgba(16,59,115,0.22)",
+                                  bgcolor: "rgba(16,59,115,0.08)",
+                                }}
+                              >
+                                {row.displayName.charAt(0)}
+                              </Avatar>
+                              <Box minWidth={0}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 800 }} noWrap>
+                                  {row.displayName}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary" noWrap>
+                                  {row.sectionName || "-"}
+                                </Typography>
+                              </Box>
+                            </Stack>
+
+                            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" justifyContent="space-between">
+                              {row.isBlankBallot ? (
+                                <Chip size="small" variant="outlined" label={BLANK_BALLOT_LABEL} />
+                              ) : (
+                                <Chip
+                                  size="small"
+                                  color={row.rank === 1 ? "success" : "default"}
+                                  label={row.rank === 1 ? "1er" : `${row.rank}e`}
+                                />
+                              )}
+                              <Chip size="small" variant="outlined" label={`${row.voteCount} vote${row.voteCount > 1 ? "s" : ""}`} />
+                              <Chip size="small" variant="outlined" label={`${row.percentage.toFixed(2)}%`} />
+                            </Stack>
+
+                            <Box sx={{ height: 10, borderRadius: 10, bgcolor: "rgba(16,59,115,0.14)", overflow: "hidden" }}>
+                              <Box
+                                sx={{
+                                  height: "100%",
+                                  width: `${Math.max(0, Math.min(100, row.percentage))}%`,
+                                  bgcolor: row.isBlankBallot ? "primary.dark" : row.rank === 1 ? "success.main" : "primary.main",
+                                  transition: "width 220ms ease",
+                                }}
+                              />
+                            </Box>
+                          </Stack>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </Box>
+                ) : null}
+              </Stack>
+            </CardContent>
+          </Card>
+        );
+      })}
     </Stack>
   );
 }
@@ -1272,7 +1706,7 @@ export function AdminSectionsPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
-  const { role } = useAuth();
+  const { role, federationScopeId } = useAuth();
   const [name, setName] = useState("");
   const [city, setCity] = useState("");
   const [region, setRegion] = useState("");
@@ -1293,6 +1727,7 @@ export function AdminSectionsPage() {
         name,
         city,
         region,
+        federationId: federationScopeId,
       }),
     onSuccess: async () => {
       setName("");
@@ -1492,7 +1927,7 @@ export function AdminMembersPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
-  const { role } = useAuth();
+  const { role, federationScopeId } = useAuth();
   const membersQuery = useQuery({
     queryKey: [...queryKeys.members, role],
     queryFn: () => fetchMembers({ includeSuperAdmins: role === "superadmin" }),
@@ -1522,6 +1957,7 @@ export function AdminMembersPage() {
         phone,
         password,
         sectionId,
+        federationId: federationScopeId,
       }),
     onSuccess: async () => {
       setError(null);
@@ -1984,7 +2420,7 @@ export function AdminMembersPage() {
 export function AdminConditionsPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
-  const { role } = useAuth();
+  const { role, federationScopeId } = useAuth();
   const canManageConditionCatalog = role === "admin" || role === "superadmin";
   const queryClient = useQueryClient();
   const conditionsQuery = useQuery({
@@ -2016,6 +2452,7 @@ export function AdminConditionsPage() {
         description,
         type,
         validityDuration: Number(validityDuration),
+        federationId: federationScopeId,
       }),
     onSuccess: async () => {
       setError(null);
@@ -2388,7 +2825,7 @@ export function AdminConditionsPage() {
 export function AdminContributionsPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
-  const { role } = useAuth();
+  const { role, federationScopeId } = useAuth();
   const queryClient = useQueryClient();
   const membersQuery = useQuery({
     queryKey: [...queryKeys.members, role],
@@ -2426,6 +2863,7 @@ export function AdminContributionsPage() {
         currency: policyCurrency,
         periodicity: policyPeriodicity,
         gracePeriodDays: Number(policyGraceDays),
+        federationId: federationScopeId,
       }),
     onSuccess: async () => {
       setError(null);
@@ -2687,7 +3125,7 @@ export function AdminElectionsPage() {
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const location = useLocation();
   const candidateMode = location.pathname.startsWith("/admin/candidates");
-  const { role } = useAuth();
+  const { role, federationScopeId } = useAuth();
   const queryClient = useQueryClient();
   const electionsQuery = useQuery({
     queryKey: queryKeys.elections,
@@ -2794,6 +3232,8 @@ export function AdminElectionsPage() {
           totalEligibleVoters: number;
           totalVotesCast: number;
           participationRate: number;
+          validVotesCount: number;
+          blankVotesCount: number;
         };
         scores: Array<{
           candidateId: string;
@@ -2841,6 +3281,7 @@ export function AdminElectionsPage() {
         voterConditionIds,
         candidateConditionIds,
         allowedSectionIds,
+        federationId: federationScopeId,
       }),
     onSuccess: async () => {
       setError(null);
@@ -3381,11 +3822,9 @@ export function AdminElectionsPage() {
 
               {activeSelectedElectionId && electionScoresQuery.data ? (
                 <>
-                  <Alert severity="info">
-                    {`${electionScoresQuery.data.election.title} - ${electionScoresQuery.data.election.totalVotesCast} votes / ${
-                      electionScoresQuery.data.election.totalEligibleVoters
-                    } eligibles (${electionScoresQuery.data.election.participationRate.toFixed(2)}%)`}
-                  </Alert>
+                  <Alert severity="info">{`${electionScoresQuery.data.election.title} - ${formatElectionScoreSummary(
+                    electionScoresQuery.data.election,
+                  )}`}</Alert>
                   {electionScoresQuery.data.scores.length === 0 ? (
                     <Alert severity="info">Aucun score disponible pour cette election.</Alert>
                   ) : isMobile ? (
@@ -3845,6 +4284,8 @@ export function AdminScoresPage() {
             totalEligibleVoters: number;
             totalVotesCast: number;
             participationRate: number;
+            validVotesCount: number;
+            blankVotesCount: number;
           };
           scores: Array<{
             candidateId: string;
@@ -3882,6 +4323,8 @@ export function AdminScoresPage() {
                 totalEligibleVoters: number;
                 totalVotesCast: number;
                 participationRate: number;
+                validVotesCount: number;
+                blankVotesCount: number;
               };
               scores: Array<{
                 candidateId: string;
@@ -3904,8 +4347,10 @@ export function AdminScoresPage() {
             ...row,
             rank: rowIndex + 1,
             photoUrl,
+            isBlankBallot: false,
           };
         });
+        const displayRows = scoresData ? [...rows, createBlankBallotScoreRow(scoresData.election)] : rows;
 
         return (
           <Card key={election.id} sx={{ border: "1px solid rgba(16,59,115,0.16)", overflow: "hidden" }}>
@@ -3954,14 +4399,12 @@ export function AdminScoresPage() {
                 {candidatesQuery?.error ? <Alert severity="warning">{getErrorMessage(candidatesQuery.error)}</Alert> : null}
 
                 {scoresData ? (
-                  <Alert severity="info">
-                    {`${scoresData.election.totalVotesCast} votes / ${scoresData.election.totalEligibleVoters} eligibles (${scoresData.election.participationRate.toFixed(2)}%)`}
-                  </Alert>
+                  <Alert severity="info">{formatElectionScoreSummary(scoresData.election)}</Alert>
                 ) : null}
 
-                {scoresData && rows.length === 0 ? <Alert severity="info">Aucun candidat score pour cette election.</Alert> : null}
+                {scoresData && rows.length === 0 ? <Alert severity="info">Aucun score candidat pour cette election.</Alert> : null}
 
-                {rows.length > 0 ? (
+                {displayRows.length > 0 ? (
                   <Box
                     sx={{
                       display: "grid",
@@ -3974,7 +4417,7 @@ export function AdminScoresPage() {
                       justifyItems: "center",
                     }}
                   >
-                    {rows.map((row) => (
+                    {displayRows.map((row) => (
                       <Card
                         key={`${election.id}-${row.candidateId}`}
                         variant="outlined"
@@ -3982,9 +4425,15 @@ export function AdminScoresPage() {
                           position: "relative",
                           width: "100%",
                           maxWidth: 340,
-                          borderColor: row.rank === 1 ? "rgba(56,130,107,0.55)" : "rgba(16,59,115,0.2)",
+                          borderColor: row.isBlankBallot
+                            ? "rgba(16,59,115,0.28)"
+                            : row.rank === 1
+                              ? "rgba(56,130,107,0.55)"
+                              : "rgba(16,59,115,0.2)",
                           background:
-                            row.rank === 1
+                            row.isBlankBallot
+                              ? "linear-gradient(180deg, rgba(16,59,115,0.10), rgba(16,59,115,0.03))"
+                              : row.rank === 1
                               ? "linear-gradient(180deg, rgba(56,130,107,0.12), rgba(56,130,107,0.04))"
                               : "linear-gradient(180deg, rgba(16,59,115,0.06), rgba(16,59,115,0.02))",
                           aspectRatio: "1 / 1",
@@ -3992,7 +4441,7 @@ export function AdminScoresPage() {
                           boxShadow: row.rank === 1 ? "0 10px 22px rgba(56,130,107,0.18)" : "0 8px 18px rgba(16,59,115,0.10)",
                         }}
                       >
-                        {row.rank === 1 ? (
+                        {row.rank === 1 && !row.isBlankBallot ? (
                           <Chip
                             icon={<EmojiEventsRoundedIcon />}
                             label="Vainqueur"
@@ -4025,7 +4474,11 @@ export function AdminScoresPage() {
                                 sx={{
                                   width: isMobile ? 94 : 110,
                                   height: isMobile ? 94 : 110,
-                                  border: row.rank === 1 ? "3px solid rgba(56,130,107,0.55)" : "3px solid rgba(16,59,115,0.22)",
+                                  border: row.isBlankBallot
+                                    ? "3px solid rgba(16,59,115,0.24)"
+                                    : row.rank === 1
+                                      ? "3px solid rgba(56,130,107,0.55)"
+                                      : "3px solid rgba(16,59,115,0.22)",
                                   bgcolor: "rgba(16,59,115,0.08)",
                                 }}
                               >
@@ -4042,11 +4495,15 @@ export function AdminScoresPage() {
                             </Stack>
 
                             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" justifyContent="space-between">
-                              <Chip
-                                size="small"
-                                color={row.rank === 1 ? "success" : "default"}
-                                label={row.rank === 1 ? "1er" : `${row.rank}e`}
-                              />
+                              {row.isBlankBallot ? (
+                                <Chip size="small" variant="outlined" label={BLANK_BALLOT_LABEL} />
+                              ) : (
+                                <Chip
+                                  size="small"
+                                  color={row.rank === 1 ? "success" : "default"}
+                                  label={row.rank === 1 ? "1er" : `${row.rank}e`}
+                                />
+                              )}
                               <Chip size="small" variant="outlined" label={`${row.voteCount} vote${row.voteCount > 1 ? "s" : ""}`} />
                               <Chip size="small" variant="outlined" label={`${row.percentage.toFixed(2)}%`} />
                             </Stack>
@@ -4056,7 +4513,7 @@ export function AdminScoresPage() {
                                 sx={{
                                   height: "100%",
                                   width: `${Math.max(0, Math.min(100, row.percentage))}%`,
-                                  bgcolor: row.rank === 1 ? "success.main" : "primary.main",
+                                  bgcolor: row.isBlankBallot ? "primary.dark" : row.rank === 1 ? "success.main" : "primary.main",
                                   transition: "width 220ms ease",
                                 }}
                               />
@@ -4079,13 +4536,15 @@ export function AdminScoresPage() {
 export function AdminLogsPage() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const { federationScopeId } = useAuth();
   const [actionFilter, setActionFilter] = useState("");
   const logsQuery = useQuery({
-    queryKey: ["logs", actionFilter],
+    queryKey: ["logs", actionFilter, federationScopeId],
     queryFn: () =>
       callFunction("getAuditLogs", {
         action: actionFilter || undefined,
         limit: 200,
+        federationId: federationScopeId,
       }) as Promise<{ logs: Array<Record<string, unknown>>; total: number }>,
   });
   const formatLogTimestamp = (log: Record<string, unknown>) => {

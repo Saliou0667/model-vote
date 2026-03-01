@@ -1,5 +1,6 @@
 import { collection, getDocs, orderBy, query, where, type DocumentData } from "firebase/firestore";
 import { db } from "../config/firebase";
+import { getFederationScopeId } from "../state/federationScope";
 import type {
   Candidate,
   Condition,
@@ -10,6 +11,7 @@ import type {
   PaymentRecord,
   Section,
 } from "../types/models";
+import { resolveFederationId } from "../utils/federation";
 
 const MEMBER_ELECTION_DISPLAY_ORDER: string[] = [
   "election-bureau-federal",
@@ -28,6 +30,14 @@ function memberElectionOrderIndex(electionId: string): number {
   return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 
+function isInFederationScope(data: DocumentData): boolean {
+  return resolveFederationId(data.federationId) === getFederationScopeId();
+}
+
+function isMergedIntoAnotherElection(data: DocumentData): boolean {
+  return typeof data.mergedIntoElectionId === "string" && data.mergedIntoElectionId.trim().length > 0;
+}
+
 function toSection(id: string, data: DocumentData): Section {
   return {
     id,
@@ -35,6 +45,7 @@ function toSection(id: string, data: DocumentData): Section {
     city: String(data.city ?? ""),
     region: String(data.region ?? ""),
     memberCount: Number(data.memberCount ?? 0),
+    federationId: resolveFederationId(data.federationId),
   };
 }
 
@@ -43,6 +54,7 @@ function toMember(id: string, data: DocumentData): Member {
     id,
     uid: String(data.uid ?? id),
     email: String(data.email ?? ""),
+    federationId: resolveFederationId(data.federationId),
     firstName: String(data.firstName ?? ""),
     lastName: String(data.lastName ?? ""),
     city: String(data.city ?? ""),
@@ -64,7 +76,7 @@ function toMember(id: string, data: DocumentData): Member {
 export async function fetchSections(): Promise<Section[]> {
   const q = query(collection(db, "sections"), orderBy("name", "asc"));
   const snap = await getDocs(q);
-  return snap.docs.map((doc) => toSection(doc.id, doc.data()));
+  return snap.docs.map((doc) => toSection(doc.id, doc.data())).filter((section) => isInFederationScope(section));
 }
 
 export async function fetchMembers(options?: { includeSuperAdmins?: boolean }): Promise<Member[]> {
@@ -74,7 +86,9 @@ export async function fetchMembers(options?: { includeSuperAdmins?: boolean }): 
     ? query(membersCollection, orderBy("createdAt", "desc"))
     : query(membersCollection, where("role", "in", ["member", "admin"]));
   const snap = await getDocs(q);
-  const members = snap.docs.map((doc) => toMember(doc.id, doc.data()));
+  const members = snap.docs
+    .map((doc) => toMember(doc.id, doc.data()))
+    .filter((member) => resolveFederationId(member.federationId) === getFederationScopeId());
 
   // Keep a stable recent-first ordering even for filtered queries.
   members.sort((a, b) => {
@@ -89,10 +103,12 @@ export async function fetchActiveContributionPolicy(): Promise<ContributionPolic
   const q = query(collection(db, "contributionPolicies"), where("isActive", "==", true));
   const snap = await getDocs(q);
   if (snap.empty) return null;
-  const doc = snap.docs[0];
+  const doc = snap.docs.find((entry) => isInFederationScope(entry.data()));
+  if (!doc) return null;
   const data = doc.data();
   return {
     id: doc.id,
+    federationId: resolveFederationId(data.federationId),
     name: String(data.name ?? ""),
     amount: Number(data.amount ?? 0),
     currency: String(data.currency ?? "EUR"),
@@ -105,10 +121,14 @@ export async function fetchActiveContributionPolicy(): Promise<ContributionPolic
 export async function fetchPayments(limit = 100): Promise<PaymentRecord[]> {
   const q = query(collection(db, "payments"), orderBy("recordedAt", "desc"));
   const snap = await getDocs(q);
-  return snap.docs.slice(0, limit).map((doc) => {
+  return snap.docs
+    .filter((doc) => isInFederationScope(doc.data()))
+    .slice(0, limit)
+    .map((doc) => {
     const data = doc.data();
     return {
       id: doc.id,
+      federationId: resolveFederationId(data.federationId),
       memberId: String(data.memberId ?? ""),
       policyId: String(data.policyId ?? ""),
       amount: Number(data.amount ?? 0),
@@ -120,16 +140,17 @@ export async function fetchPayments(limit = 100): Promise<PaymentRecord[]> {
       recordedBy: String(data.recordedBy ?? ""),
       recordedAt: data.recordedAt,
     };
-  });
+    });
 }
 
 export async function fetchConditions(): Promise<Condition[]> {
   const q = query(collection(db, "conditions"), orderBy("name", "asc"));
   const snap = await getDocs(q);
-  return snap.docs.map((doc) => {
+  return snap.docs.filter((doc) => isInFederationScope(doc.data())).map((doc) => {
     const data = doc.data();
     return {
       id: doc.id,
+      federationId: resolveFederationId(data.federationId),
       name: String(data.name ?? ""),
       description: String(data.description ?? ""),
       type: (data.type ?? "checkbox") as Condition["type"],
@@ -143,10 +164,11 @@ export async function fetchMemberConditions(memberId: string): Promise<MemberCon
   if (!memberId) return [];
   const q = query(collection(db, "memberConditions"), where("memberId", "==", memberId), orderBy("updatedAt", "desc"));
   const snap = await getDocs(q);
-  return snap.docs.map((doc) => {
+  return snap.docs.filter((doc) => isInFederationScope(doc.data())).map((doc) => {
     const data = doc.data();
     return {
       id: doc.id,
+      federationId: resolveFederationId(data.federationId),
       memberId: String(data.memberId ?? ""),
       conditionId: String(data.conditionId ?? ""),
       validated: Boolean(data.validated),
@@ -162,10 +184,11 @@ export async function fetchMemberConditions(memberId: string): Promise<MemberCon
 export async function fetchElections(): Promise<Election[]> {
   const q = query(collection(db, "elections"), orderBy("createdAt", "desc"));
   const snap = await getDocs(q);
-  return snap.docs.map((doc) => {
+  return snap.docs.filter((doc) => isInFederationScope(doc.data()) && !isMergedIntoAnotherElection(doc.data())).map((doc) => {
     const data = doc.data();
     return {
       id: doc.id,
+      federationId: resolveFederationId(data.federationId),
       title: String(data.title ?? ""),
       description: String(data.description ?? ""),
       type: (data.type ?? "federal") as Election["type"],
@@ -185,10 +208,13 @@ export async function fetchElections(): Promise<Election[]> {
 export async function fetchMemberVisibleElections(): Promise<Election[]> {
   const q = query(collection(db, "elections"), where("status", "in", ["open", "published"]));
   const snap = await getDocs(q);
-  const elections = snap.docs.map((doc) => {
+  const elections = snap.docs
+    .filter((doc) => isInFederationScope(doc.data()) && !isMergedIntoAnotherElection(doc.data()))
+    .map((doc) => {
     const data = doc.data();
     return {
       id: doc.id,
+      federationId: resolveFederationId(data.federationId),
       title: String(data.title ?? ""),
       description: String(data.description ?? ""),
       type: (data.type ?? "federal") as Election["type"],
@@ -202,7 +228,7 @@ export async function fetchMemberVisibleElections(): Promise<Election[]> {
       totalEligibleVoters: Number(data.totalEligibleVoters ?? 0),
       totalVotesCast: Number(data.totalVotesCast ?? 0),
     };
-  });
+    });
 
   return elections.sort((a, b) => {
     const aOrder = memberElectionOrderIndex(a.id);
@@ -222,10 +248,11 @@ export async function fetchCandidates(electionId: string): Promise<Candidate[]> 
   if (!electionId) return [];
   const q = query(collection(db, `elections/${electionId}/candidates`), orderBy("displayOrder", "asc"));
   const snap = await getDocs(q);
-  return snap.docs.map((doc) => {
+  return snap.docs.filter((doc) => isInFederationScope(doc.data())).map((doc) => {
     const data = doc.data();
     return {
       id: doc.id,
+      federationId: resolveFederationId(data.federationId),
       memberId: String(data.memberId ?? ""),
       displayName: String(data.displayName ?? ""),
       sectionName: String(data.sectionName ?? ""),

@@ -6,6 +6,7 @@ import HomeRoundedIcon from "@mui/icons-material/HomeRounded";
 import HowToVoteRoundedIcon from "@mui/icons-material/HowToVoteRounded";
 import PollRoundedIcon from "@mui/icons-material/PollRounded";
 import TaskAltRoundedIcon from "@mui/icons-material/TaskAltRounded";
+import { useQuery } from "@tanstack/react-query";
 import {
   Avatar,
   BottomNavigation,
@@ -28,11 +29,12 @@ import {
 import { useTheme } from "@mui/material/styles";
 import { useMemo, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { fetchMemberVisibleElections } from "../api/firestoreQueries";
 import { useAuth } from "../hooks/useAuth";
 
 const drawerWidth = 250;
 
-const navItems = [
+const baseNavItems = [
   { label: "Accueil", mobileLabel: "Accueil", to: "/member", icon: <HomeRoundedIcon fontSize="small" /> },
   { label: "Profil", mobileLabel: "Profil", to: "/member/profile", icon: <AccountCircleRoundedIcon fontSize="small" /> },
   {
@@ -43,10 +45,10 @@ const navItems = [
   },
   { label: "Eligibilite", mobileLabel: "Eligibilite", to: "/member/eligibility", icon: <TaskAltRoundedIcon fontSize="small" /> },
   { label: "Vote", mobileLabel: "Vote", to: "/member/vote", icon: <HowToVoteRoundedIcon fontSize="small" /> },
-  { label: "Resultats", mobileLabel: "Resultats", to: "/member/results", icon: <PollRoundedIcon fontSize="small" /> },
+  { label: "Scores", mobileLabel: "Scores", to: "/member/scores", icon: <PollRoundedIcon fontSize="small" /> },
 ];
 
-const mobilePrimaryNavItems = ["/member", "/member/eligibility", "/member/vote", "/member/profile"];
+const mobilePrimaryNavItems = ["/member", "/member/eligibility", "/member/vote", "/member/scores", "/member/profile"];
 
 export function MemberLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -55,6 +57,18 @@ export function MemberLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const { signOutUser, user } = useAuth();
+  const electionsQuery = useQuery({
+    queryKey: ["memberElections", "member-layout-nav"],
+    queryFn: fetchMemberVisibleElections,
+  });
+  const hasPublishedResults = useMemo(
+    () => (electionsQuery.data ?? []).some((election) => election.status === "published"),
+    [electionsQuery.data],
+  );
+  const navItems = useMemo(
+    () => baseNavItems.filter((item) => item.to !== "/member/scores" || hasPublishedResults),
+    [hasPublishedResults],
+  );
 
   const selectedPath = useMemo(() => {
     const match = navItems.find((item) => {
@@ -64,8 +78,8 @@ export function MemberLayout() {
       return location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
     });
     return match?.to ?? "/member";
-  }, [location.pathname]);
-  const mobileNavItems = useMemo(() => navItems.filter((item) => mobilePrimaryNavItems.includes(item.to)), []);
+  }, [location.pathname, navItems]);
+  const mobileNavItems = useMemo(() => navItems.filter((item) => mobilePrimaryNavItems.includes(item.to)), [navItems]);
   const mobileSelectedPath = useMemo(
     () => (mobileNavItems.some((item) => item.to === selectedPath) ? selectedPath : null),
     [mobileNavItems, selectedPath],

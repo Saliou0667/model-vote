@@ -12,7 +12,14 @@ import { doc, getDoc } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { auth, db, functions } from "../config/firebase";
 import type { ReactNode } from "react";
+import { setFederationScopeId as setGlobalFederationScopeId } from "../state/federationScope";
 import type { AuthContextValue, MemberProfile, SignUpPayload, UserRole } from "../types/auth";
+import {
+  DEFAULT_FEDERATION_ID,
+  readStoredSuperAdminFederationScope,
+  resolveFederationId,
+  storeSuperAdminFederationScope,
+} from "../utils/federation";
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -24,7 +31,22 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<MemberProfile | null>(null);
   const [role, setRole] = useState<UserRole>("member");
+  const [federationId, setFederationId] = useState<string>(DEFAULT_FEDERATION_ID);
+  const [federationScopeId, setFederationScopeIdState] = useState<string>(DEFAULT_FEDERATION_ID);
   const [loading, setLoading] = useState(true);
+
+  const applyFederationScope = useCallback((nextRole: UserRole, nextFederationId: string) => {
+    if (nextRole === "superadmin") {
+      const storedScope = readStoredSuperAdminFederationScope();
+      const resolvedScope = resolveFederationId(storedScope ?? nextFederationId);
+      setFederationScopeIdState(resolvedScope);
+      setGlobalFederationScopeId(resolvedScope);
+      return;
+    }
+
+    setFederationScopeIdState(nextFederationId);
+    setGlobalFederationScopeId(nextFederationId);
+  }, []);
 
   const ensureProfile = useCallback(async () => {
     const callable = httpsCallable(functions, "ensureMemberProfile");
@@ -40,6 +62,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       await ensureProfile();
       const token = await getIdTokenResult(nextUser, true).catch(() => null);
       const claimRole = token?.claims.role as UserRole | undefined;
+      const claimFederationId = resolveFederationId(token?.claims.federationId);
 
       try {
         const memberRef = doc(db, "members", nextUser.uid);
@@ -47,16 +70,24 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const nextProfile = memberSnap.exists()
           ? ({ uid: memberSnap.id, ...(memberSnap.data() as Omit<MemberProfile, "uid">) } as MemberProfile)
           : null;
+        const memberFederationId = resolveFederationId(nextProfile?.federationId ?? claimFederationId);
+        const hydratedProfile = nextProfile ? { ...nextProfile, federationId: memberFederationId } : null;
+        const nextRole = hydratedProfile?.role ?? claimRole ?? "member";
 
-        setProfile(nextProfile);
-        setRole(nextProfile?.role ?? claimRole ?? "member");
+        setProfile(hydratedProfile);
+        setRole(nextRole);
+        setFederationId(memberFederationId);
+        applyFederationScope(nextRole, memberFederationId);
       } catch {
         // Keep app usable while backend/emulators are warming up.
         setProfile(null);
-        setRole(claimRole ?? "member");
+        const nextRole = claimRole ?? "member";
+        setRole(nextRole);
+        setFederationId(claimFederationId);
+        applyFederationScope(nextRole, claimFederationId);
       }
     },
-    [ensureProfile],
+    [applyFederationScope, ensureProfile],
   );
 
   const refreshAuthState = useCallback(async () => {
@@ -64,6 +95,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (!current) {
       setProfile(null);
       setRole("member");
+      setFederationId(DEFAULT_FEDERATION_ID);
+      setFederationScopeIdState(DEFAULT_FEDERATION_ID);
+      setGlobalFederationScopeId(DEFAULT_FEDERATION_ID);
       return;
     }
     await current.reload();
@@ -78,6 +112,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
       if (!nextUser) {
         setProfile(null);
         setRole("member");
+        setFederationId(DEFAULT_FEDERATION_ID);
+        setFederationScopeIdState(DEFAULT_FEDERATION_ID);
+        setGlobalFederationScopeId(DEFAULT_FEDERATION_ID);
         setLoading(false);
         return;
       }
@@ -87,6 +124,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
       } catch {
         setProfile(null);
         setRole("member");
+        setFederationId(DEFAULT_FEDERATION_ID);
+        setFederationScopeIdState(DEFAULT_FEDERATION_ID);
+        setGlobalFederationScopeId(DEFAULT_FEDERATION_ID);
       } finally {
         setLoading(false);
       }
@@ -100,6 +140,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
       user,
       role,
       profile,
+      federationId,
+      federationScopeId,
       loading,
       signIn: async (email, password) => {
         await signInWithEmailAndPassword(auth, email, password);
@@ -107,7 +149,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       signUp: async (payload: SignUpPayload) => {
         const cred = await createUserWithEmailAndPassword(auth, payload.email.trim().toLowerCase(), payload.password);
         const ensureMemberProfile = httpsCallable(functions, "ensureMemberProfile");
-        await ensureMemberProfile({});
+        await ensureMemberProfile({ federationId: payload.federationId });
         const updateMember = httpsCallable(functions, "updateMember");
         await updateMember({
           memberId: cred.user.uid,
@@ -127,8 +169,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
         // Verification email disabled in this workflow (admin approval is authoritative).
       },
       refreshAuthState,
+      setFederationScope: (nextFederationId: string) => {
+        const resolvedScope = resolveFederationId(nextFederationId);
+        if (role !== "superadmin") {
+          setFederationScopeIdState(federationId);
+          setGlobalFederationScopeId(federationId);
+          return;
+        }
+        storeSuperAdminFederationScope(resolvedScope);
+        setFederationScopeIdState(resolvedScope);
+        setGlobalFederationScopeId(resolvedScope);
+      },
     }),
-    [loading, profile, refreshAuthState, role, user],
+    [federationId, federationScopeId, loading, profile, refreshAuthState, role, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

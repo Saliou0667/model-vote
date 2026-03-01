@@ -4,6 +4,7 @@ import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore, type Transaction, type WriteBatch } from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 
 initializeApp();
 
@@ -11,6 +12,12 @@ type Role = "member" | "admin" | "superadmin";
 type MemberStatus = "pending" | "active" | "suspended";
 type MemberRegistrationSource = "self_registration" | "admin_created";
 type ContributionPeriodicity = "monthly" | "quarterly" | "yearly";
+type Federation = {
+  id: string;
+  name: string;
+  countryCode: string;
+  isActive: boolean;
+};
 type ActiveContributionPolicy = {
   id: string;
   gracePeriodDays?: number;
@@ -47,11 +54,44 @@ type AuditPayload = {
   actorRole: Role | "system";
   targetType: AuditTarget;
   targetId: string;
+  federationId?: string;
   details?: Record<string, unknown>;
 };
 
 const db = getFirestore();
 const auth = getAuth();
+const DEFAULT_FEDERATION_ID = "france";
+const BELGIQUE_FEDERATION_ID = "belgique";
+const BLANK_BALLOT_ID = "bulletin-blanc";
+const BLANK_BALLOT_KEYS = new Set([
+  BLANK_BALLOT_ID,
+  "blanc",
+  "vote-blanc",
+  "voteblanc",
+  "bulletin-blanc",
+  "bulletinblanc",
+  "blank",
+  "white-vote",
+  "whitevote",
+]);
+const NULL_BALLOT_KEYS = new Set([
+  "nul",
+  "null",
+  "invalid",
+  "invalid-ballot",
+  "invalidballot",
+  "spoiled",
+  "spoiled-ballot",
+  "spoiledballot",
+  "bulletin-nul",
+  "bulletinnul",
+  "bulletin-null",
+  "bulletinnull",
+]);
+const DEFAULT_FEDERATIONS: Federation[] = [
+  { id: "france", name: "France", countryCode: "FR", isActive: true },
+  { id: "belgique", name: "Belgique", countryCode: "BE", isActive: true },
+];
 
 function getRuntimeConfig(): RuntimeConfig {
   const raw = process.env.CLOUD_RUNTIME_CONFIG;
@@ -83,6 +123,125 @@ function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeFederationId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (!normalized) return null;
+  if (["fr", "france", "fr-fr", "federation-fr", "federation-france"].includes(normalized)) {
+    return "france";
+  }
+  if (["be", "belgique", "belgium", "be-be", "federation-be", "federation-belgique", "federation-belgium"].includes(normalized)) {
+    return "belgique";
+  }
+  return normalized;
+}
+
+function resolveFederationId(value: unknown): string {
+  return normalizeFederationId(value) ?? DEFAULT_FEDERATION_ID;
+}
+
+function normalizeBallotChoiceKey(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function classifyBallotCandidateId(candidateId: string): "candidate" | "blank" {
+  const normalized = normalizeBallotChoiceKey(candidateId);
+  if (!normalized) return "blank";
+  if (BLANK_BALLOT_KEYS.has(normalized)) return "blank";
+  if (NULL_BALLOT_KEYS.has(normalized)) return "blank";
+  return "candidate";
+}
+
+function buildElectionVoteStats(
+  totalEligibleVoters: number,
+  totalVotesCast: number,
+  validVotesCount: number,
+  blankVotesCount: number,
+) {
+  const participationBase = Math.max(totalEligibleVoters, totalVotesCast);
+  const participationRate = participationBase > 0 ? (totalVotesCast / participationBase) * 100 : 0;
+  return {
+    totalEligibleVoters,
+    totalVotesCast,
+    validVotesCount,
+    blankVotesCount,
+    participationRate,
+  };
+}
+
+function canAccessFederation(actorRole: Role | null, actorFederationId: string, targetFederationId: string): boolean {
+  if (actorRole === "superadmin") return true;
+  return actorFederationId === targetFederationId;
+}
+
+function requireFederationAccess(actorRole: Role | null, actorFederationId: string, targetFederationId: string): void {
+  if (!canAccessFederation(actorRole, actorFederationId, targetFederationId)) {
+    throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+  }
+}
+
+function resolveTargetFederationForWrite(
+  actorRole: Role | null,
+  actorFederationId: string,
+  requestedFederationId: unknown,
+): string {
+  const normalizedRequested = normalizeFederationId(requestedFederationId);
+  if (actorRole === "superadmin") {
+    return normalizedRequested ?? actorFederationId;
+  }
+  if (normalizedRequested && normalizedRequested !== actorFederationId) {
+    throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+  }
+  return actorFederationId;
+}
+
+async function ensureDefaultFederations(): Promise<void> {
+  const snaps = await Promise.all(
+    DEFAULT_FEDERATIONS.map((entry) => db.collection("federations").doc(entry.id).get()),
+  );
+  if (snaps.every((snap) => snap.exists)) return;
+
+  const batch = db.batch();
+  DEFAULT_FEDERATIONS.forEach((entry, index) => {
+    if (snaps[index].exists) return;
+    batch.set(db.collection("federations").doc(entry.id), {
+      name: entry.name,
+      countryCode: entry.countryCode,
+      isActive: entry.isActive,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  });
+  await batch.commit();
+}
+
+async function ensureFederationExists(federationId: string): Promise<void> {
+  await ensureDefaultFederations();
+  const snap = await db.collection("federations").doc(federationId).get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "ERROR_FEDERATION_NOT_FOUND");
+  }
+  const data = snap.data() as { isActive?: boolean } | undefined;
+  if (data?.isActive === false) {
+    throw new HttpsError("failed-precondition", "ERROR_FEDERATION_INACTIVE");
+  }
 }
 
 function optionalHttpUrl(value: unknown, field: string): string {
@@ -132,6 +291,13 @@ async function getRequesterRole(uid: string): Promise<Role | null> {
   return role;
 }
 
+async function getRequesterFederationId(uid: string): Promise<string> {
+  const snap = await db.collection("members").doc(uid).get();
+  if (!snap.exists) return DEFAULT_FEDERATION_ID;
+  const data = snap.data() as { federationId?: string } | undefined;
+  return resolveFederationId(data?.federationId);
+}
+
 async function ensureUniqueMemberEmail(email: string, exceptUid?: string): Promise<void> {
   const normalizedEmail = email.trim().toLowerCase();
   const duplicatesSnap = await db.collection("members").where("email", "==", normalizedEmail).limit(5).get();
@@ -159,6 +325,7 @@ async function writeAudit(payload: AuditPayload): Promise<void> {
   if (payload.actorRole === "superadmin") return;
   await db.collection("auditLogs").add({
     ...payload,
+    federationId: resolveFederationId(payload.federationId),
     timestamp: FieldValue.serverTimestamp(),
   });
 }
@@ -167,6 +334,7 @@ function writeAuditTx(tx: Transaction, payload: AuditPayload): void {
   if (payload.actorRole === "superadmin") return;
   tx.set(db.collection("auditLogs").doc(), {
     ...payload,
+    federationId: resolveFederationId(payload.federationId),
     timestamp: FieldValue.serverTimestamp(),
   });
 }
@@ -175,13 +343,126 @@ function writeAuditBatch(batch: WriteBatch, payload: AuditPayload): void {
   if (payload.actorRole === "superadmin") return;
   batch.set(db.collection("auditLogs").doc(), {
     ...payload,
+    federationId: resolveFederationId(payload.federationId),
     timestamp: FieldValue.serverTimestamp(),
   });
 }
 
-async function ensureSectionExists(sectionId: string): Promise<void> {
+async function runBelgiqueScheduledElectionWindow(now: Date): Promise<{
+  openedElectionIds: string[];
+  closedElectionIds: string[];
+}> {
+  const openedElectionIds: string[] = [];
+  const closedElectionIds: string[] = [];
+  const nowMs = now.getTime();
+
+  const electionsSnap = await db.collection("elections").where("federationId", "==", BELGIQUE_FEDERATION_ID).get();
+  for (const doc of electionsSnap.docs) {
+    const data = doc.data() as {
+      status?: string;
+      startAt?: { toDate?: () => Date };
+      endAt?: { toDate?: () => Date };
+      mergedIntoElectionId?: string;
+      title?: string;
+      voterConditionIds?: string[];
+      minSeniority?: number;
+      allowedSectionIds?: string[] | null;
+    };
+    if (typeof data.mergedIntoElectionId === "string" && data.mergedIntoElectionId.trim().length > 0) {
+      continue;
+    }
+
+    const status = String(data.status ?? "draft");
+    const startAt = data.startAt?.toDate?.();
+    const endAt = data.endAt?.toDate?.();
+    if (!startAt || !endAt) continue;
+
+    if (status === "draft" && startAt.getTime() <= nowMs && endAt.getTime() > nowMs) {
+      const candidatesSnap = await db.collection(`elections/${doc.id}/candidates`).get();
+      const validated = candidatesSnap.docs.filter((candidateDoc) => candidateDoc.data().status === "validated");
+      const shuffled = [...validated].sort(() => Math.random() - 0.5);
+
+      const membersSnap = await db.collection("members").where("status", "==", "active").get();
+      let totalEligibleVoters = 0;
+      for (const memberDoc of membersSnap.docs) {
+        if (resolveFederationId(memberDoc.data().federationId) !== BELGIQUE_FEDERATION_ID) continue;
+        const eligible = await checkMemberAgainstRules({
+          memberId: memberDoc.id,
+          federationId: BELGIQUE_FEDERATION_ID,
+          conditionIds: Array.isArray(data.voterConditionIds) ? data.voterConditionIds : [],
+          minSeniority: Number(data.minSeniority ?? 0),
+          allowedSectionIds: Array.isArray(data.allowedSectionIds) ? data.allowedSectionIds : null,
+          context: "vote",
+        });
+        if (eligible.eligible) totalEligibleVoters += 1;
+      }
+
+      const batch = db.batch();
+      shuffled.forEach((candidateDoc, index) => {
+        batch.update(candidateDoc.ref, {
+          displayOrder: index + 1,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      });
+      batch.update(doc.ref, {
+        status: "open",
+        lockedAt: FieldValue.serverTimestamp(),
+        closedAt: null,
+        totalEligibleVoters,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      writeAuditBatch(batch, {
+        action: "election.open.auto_belgique",
+        actorId: "system-belgique-scheduler",
+        actorRole: "system",
+        targetType: "election",
+        targetId: doc.id,
+        federationId: BELGIQUE_FEDERATION_ID,
+        details: {
+          totalEligibleVoters,
+          startAt: startAt.toISOString(),
+          endAt: endAt.toISOString(),
+        },
+      });
+      await batch.commit();
+      openedElectionIds.push(doc.id);
+      continue;
+    }
+
+    if (status === "open" && endAt.getTime() <= nowMs) {
+      await doc.ref.update({
+        status: "closed",
+        closedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      await writeAudit({
+        action: "election.close.auto_belgique",
+        actorId: "system-belgique-scheduler",
+        actorRole: "system",
+        targetType: "election",
+        targetId: doc.id,
+        federationId: BELGIQUE_FEDERATION_ID,
+        details: {
+          startAt: startAt.toISOString(),
+          endAt: endAt.toISOString(),
+        },
+      });
+      closedElectionIds.push(doc.id);
+    }
+  }
+
+  return { openedElectionIds, closedElectionIds };
+}
+
+async function ensureSectionExists(sectionId: string, federationId?: string): Promise<void> {
   const snap = await db.collection("sections").doc(sectionId).get();
   if (!snap.exists) throw new HttpsError("not-found", "ERROR_SECTION_NOT_FOUND");
+  if (federationId) {
+    const targetFederationId = resolveFederationId(snap.data()?.federationId);
+    if (targetFederationId !== federationId) {
+      throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+    }
+  }
 }
 
 function createTempPassword(): string {
@@ -216,15 +497,17 @@ function normalizeRegistrationSource(value: unknown): MemberRegistrationSource {
   return value === "admin_created" ? "admin_created" : "self_registration";
 }
 
-async function getActiveContributionPolicy(): Promise<ActiveContributionPolicy | null> {
+async function getActiveContributionPolicy(federationId: string): Promise<ActiveContributionPolicy | null> {
   const snap = await db.collection("contributionPolicies").where("isActive", "==", true).limit(1).get();
   if (snap.empty) return null;
-  const data = snap.docs[0].data() as { gracePeriodDays?: number };
-  return { id: snap.docs[0].id, gracePeriodDays: data.gracePeriodDays };
+  const match = snap.docs.find((doc) => resolveFederationId(doc.data().federationId) === federationId);
+  if (!match) return null;
+  const data = match.data() as { gracePeriodDays?: number };
+  return { id: match.id, gracePeriodDays: data.gracePeriodDays };
 }
 
-async function isContributionUpToDate(memberId: string): Promise<boolean> {
-  const policy = await getActiveContributionPolicy();
+async function isContributionUpToDate(memberId: string, federationId: string): Promise<boolean> {
+  const policy = await getActiveContributionPolicy(federationId);
   if (!policy) return false;
 
   const latestPayment = await db
@@ -235,7 +518,11 @@ async function isContributionUpToDate(memberId: string): Promise<boolean> {
     .get();
 
   if (latestPayment.empty) return false;
-  const periodEnd = latestPayment.docs[0].data().periodEnd?.toDate?.() as Date | undefined;
+  const matchingPayment = latestPayment.docs.find(
+    (doc) => resolveFederationId(doc.data().federationId) === federationId,
+  );
+  if (!matchingPayment) return false;
+  const periodEnd = matchingPayment.data().periodEnd?.toDate?.() as Date | undefined;
   if (!periodEnd) return false;
 
   const graceDays = Number(policy.gracePeriodDays ?? 0);
@@ -253,23 +540,39 @@ function normalizeIdArray(values: unknown): string[] {
   return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
 }
 
-async function ensureConditionIdsExist(conditionIds: string[]): Promise<void> {
+async function ensureConditionIdsExist(conditionIds: string[], federationId?: string): Promise<void> {
   if (conditionIds.length === 0) return;
   const checks = await Promise.all(conditionIds.map((conditionId) => db.collection("conditions").doc(conditionId).get()));
   if (checks.some((snap) => !snap.exists)) {
     throw new HttpsError("not-found", "ERROR_CONDITION_NOT_FOUND");
   }
+  if (federationId) {
+    checks.forEach((snap) => {
+      const currentFederationId = resolveFederationId(snap.data()?.federationId);
+      if (currentFederationId !== federationId) {
+        throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+      }
+    });
+  }
 }
 
-async function ensureSectionIdsExist(sectionIds: string[]): Promise<void> {
+async function ensureSectionIdsExist(sectionIds: string[], federationId?: string): Promise<void> {
   if (sectionIds.length === 0) return;
   const checks = await Promise.all(sectionIds.map((sectionId) => db.collection("sections").doc(sectionId).get()));
   if (checks.some((snap) => !snap.exists)) {
     throw new HttpsError("not-found", "ERROR_SECTION_NOT_FOUND");
   }
+  if (federationId) {
+    checks.forEach((snap) => {
+      const currentFederationId = resolveFederationId(snap.data()?.federationId);
+      if (currentFederationId !== federationId) {
+        throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+      }
+    });
+  }
 }
 
-async function getActiveConditionIds(conditionIds: string[]): Promise<string[]> {
+async function getActiveConditionIds(conditionIds: string[], federationId: string): Promise<string[]> {
   const normalized = [...new Set(conditionIds.map((id) => id.trim()).filter(Boolean))];
   if (normalized.length === 0) return [];
 
@@ -277,6 +580,7 @@ async function getActiveConditionIds(conditionIds: string[]): Promise<string[]> 
     normalized.map(async (conditionId) => {
       const snap = await db.collection("conditions").doc(conditionId).get();
       if (!snap.exists) return null;
+      if (resolveFederationId(snap.data()?.federationId) !== federationId) return null;
       const data = snap.data() as { isActive?: boolean } | undefined;
       const isActive = data?.isActive ?? true;
       return isActive ? conditionId : null;
@@ -288,6 +592,7 @@ async function getActiveConditionIds(conditionIds: string[]): Promise<string[]> 
 
 async function checkMemberAgainstRules(input: {
   memberId: string;
+  federationId: string;
   conditionIds: string[];
   minSeniority?: number;
   allowedSectionIds?: string[] | null;
@@ -296,6 +601,7 @@ async function checkMemberAgainstRules(input: {
   const memberSnap = await db.collection("members").doc(input.memberId).get();
   if (!memberSnap.exists) return { eligible: false, reasons: ["member_not_found"] };
   const member = memberSnap.data() as {
+    federationId?: string;
     status?: MemberStatus;
     registrationSource?: MemberRegistrationSource;
     votingApprovedByAdmin?: boolean;
@@ -307,6 +613,10 @@ async function checkMemberAgainstRules(input: {
   const registrationSource = normalizeRegistrationSource(member.registrationSource);
   const votingApprovedByAdmin = member.votingApprovedByAdmin !== false;
   const reasons: string[] = [];
+  if (resolveFederationId(member.federationId) !== input.federationId) {
+    reasons.push("federation_scope_mismatch");
+    return { eligible: false, reasons };
+  }
   if (member.status !== "active") reasons.push("status_inactive");
   if (context === "vote" && registrationSource === "self_registration" && !votingApprovedByAdmin) {
     reasons.push("admin_approval_required");
@@ -315,7 +625,7 @@ async function checkMemberAgainstRules(input: {
     return { eligible: true, reasons };
   }
 
-  const contributionOk = await isContributionUpToDate(input.memberId);
+  const contributionOk = await isContributionUpToDate(input.memberId, input.federationId);
   if (!contributionOk) reasons.push("contribution_not_up_to_date");
 
   const minSeniority = Number(input.minSeniority ?? 0);
@@ -333,7 +643,7 @@ async function checkMemberAgainstRules(input: {
     }
   }
 
-  const activeConditionIds = await getActiveConditionIds(input.conditionIds);
+  const activeConditionIds = await getActiveConditionIds(input.conditionIds, input.federationId);
   for (const conditionId of activeConditionIds) {
     const docId = memberConditionDocId(input.memberId, conditionId);
     const snap = await db.collection("memberConditions").doc(docId).get();
@@ -358,6 +668,8 @@ export const ensureMemberProfile = onCall(async (request) => {
   }
   const normalizedEmail = email.trim().toLowerCase();
   await ensureUniqueMemberEmail(normalizedEmail, uid);
+  const requestedFederationId = resolveFederationId(request.data?.federationId);
+  await ensureFederationExists(requestedFederationId);
 
   const memberRef = db.collection("members").doc(uid);
   const emailVerified = request.auth?.token?.email_verified ?? false;
@@ -380,6 +692,7 @@ export const ensureMemberProfile = onCall(async (request) => {
         city: "",
         phone: "",
         sectionId: "",
+        federationId: requestedFederationId,
         profileCompleted: false,
         joinedAt: FieldValue.serverTimestamp(),
         createdAt: FieldValue.serverTimestamp(),
@@ -391,6 +704,7 @@ export const ensureMemberProfile = onCall(async (request) => {
         actorRole: "member",
         targetType: "member",
         targetId: uid,
+        federationId: requestedFederationId,
         details: { source: "self_registration" },
       });
       return { role: "member" as Role, status: "pending" as MemberStatus };
@@ -399,6 +713,7 @@ export const ensureMemberProfile = onCall(async (request) => {
     const current = (snap.data() ?? {}) as {
       role?: Role;
       status?: MemberStatus;
+      federationId?: string;
       registrationSource?: MemberRegistrationSource;
       passwordChangeRequired?: boolean;
       passwordUpdatedAt?: unknown;
@@ -413,6 +728,9 @@ export const ensureMemberProfile = onCall(async (request) => {
     }
     if (!current.passwordUpdatedAt) {
       mergePatch.passwordUpdatedAt = FieldValue.serverTimestamp();
+    }
+    if (!current.federationId) {
+      mergePatch.federationId = requestedFederationId;
     }
     if (!current.registrationSource && current.role === "member" && current.status === "pending") {
       mergePatch.registrationSource = "self_registration";
@@ -457,6 +775,9 @@ export const bootstrapRole = onCall(async (request) => {
   }
 
   const memberRef = db.collection("members").doc(uid);
+  const existingMember = await memberRef.get();
+  const bootstrapFederationId = resolveFederationId(existingMember.data()?.federationId);
+  await ensureFederationExists(bootstrapFederationId);
 
   await db.runTransaction(async (tx) => {
     const member = await tx.get(memberRef);
@@ -469,6 +790,7 @@ export const bootstrapRole = onCall(async (request) => {
         email,
         role: "superadmin",
         status: "active",
+        federationId: bootstrapFederationId,
         passwordChangeRequired: false,
         passwordUpdatedAt: FieldValue.serverTimestamp(),
         emailVerified: request.auth?.token?.email_verified ?? false,
@@ -486,6 +808,7 @@ export const bootstrapRole = onCall(async (request) => {
       actorRole: "superadmin",
       targetType: "member",
       targetId: uid,
+      federationId: bootstrapFederationId,
       details: {
         previousRole,
         newRole: "superadmin",
@@ -499,6 +822,7 @@ export const bootstrapRole = onCall(async (request) => {
       actorRole: "superadmin",
       targetType: "audit",
       targetId: "bootstrap",
+      federationId: bootstrapFederationId,
       details: {
         scope: "bootstrap",
         reason: "Initial superadmin provisioning",
@@ -506,7 +830,7 @@ export const bootstrapRole = onCall(async (request) => {
     });
   });
 
-  await auth.setCustomUserClaims(uid, { role: "superadmin" });
+  await auth.setCustomUserClaims(uid, { role: "superadmin", federationId: bootstrapFederationId });
   logger.info("bootstrapRole success", { uid, email });
   return ok({ role: "superadmin" as Role });
 });
@@ -516,6 +840,7 @@ export const changeRole = onCall(async (request) => {
   requireAuth(actorUid);
 
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
   const effectiveActorRole = actorRole as Role;
 
@@ -534,11 +859,14 @@ export const changeRole = onCall(async (request) => {
 
   const memberRef = db.collection("members").doc(memberId);
   let appliedRole: Role = requestedRole;
+  let targetFederationId = DEFAULT_FEDERATION_ID;
 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(memberRef);
     if (!snap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
 
+    targetFederationId = resolveFederationId(snap.data()?.federationId);
+    requireFederationAccess(effectiveActorRole, actorFederationId, targetFederationId);
     const previousRole = (snap.data()?.role as Role | undefined) ?? "member";
     if (effectiveActorRole === "admin" && previousRole === "superadmin") {
       throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED_ROLE_CHANGE");
@@ -555,11 +883,12 @@ export const changeRole = onCall(async (request) => {
       actorRole: effectiveActorRole,
       targetType: "member",
       targetId: memberId,
+      federationId: actorFederationId,
       details: { previousRole, newRole: appliedRole },
     });
   });
 
-  await auth.setCustomUserClaims(memberId, { role: appliedRole });
+  await auth.setCustomUserClaims(memberId, { role: appliedRole, federationId: targetFederationId });
   return ok({ memberId, role: appliedRole });
 });
 
@@ -567,7 +896,14 @@ export const createSection = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
+  const targetFederationId = resolveTargetFederationForWrite(
+    actorRole,
+    actorFederationId,
+    request.data?.federationId,
+  );
+  await ensureFederationExists(targetFederationId);
 
   const name = requireString(request.data?.name, "name");
   const city = requireString(request.data?.city, "city");
@@ -578,6 +914,7 @@ export const createSection = onCall(async (request) => {
     name,
     city,
     region: region ?? "",
+    federationId: targetFederationId,
     memberCount: 0,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -589,6 +926,7 @@ export const createSection = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "section",
     targetId: ref.id,
+    federationId: targetFederationId,
     details: { name, city },
   });
 
@@ -599,6 +937,7 @@ export const updateSection = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const sectionId = requireString(request.data?.sectionId, "sectionId");
@@ -616,6 +955,8 @@ export const updateSection = onCall(async (request) => {
   const sectionRef = db.collection("sections").doc(sectionId);
   const snap = await sectionRef.get();
   if (!snap.exists) throw new HttpsError("not-found", "ERROR_SECTION_NOT_FOUND");
+  const sectionFederationId = resolveFederationId(snap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, sectionFederationId);
 
   await sectionRef.update({
     ...updates,
@@ -628,6 +969,7 @@ export const updateSection = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "section",
     targetId: sectionId,
+    federationId: sectionFederationId,
     details: { fields: Object.keys(updates) },
   });
 
@@ -638,12 +980,15 @@ export const deleteSection = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["superadmin"]);
 
   const sectionId = requireString(request.data?.sectionId, "sectionId");
   const sectionRef = db.collection("sections").doc(sectionId);
   const sectionSnap = await sectionRef.get();
   if (!sectionSnap.exists) throw new HttpsError("not-found", "ERROR_SECTION_NOT_FOUND");
+  const sectionFederationId = resolveFederationId(sectionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, sectionFederationId);
 
   const membersSnap = await db.collection("members").where("sectionId", "==", sectionId).limit(1).get();
   if (!membersSnap.empty) {
@@ -657,30 +1002,99 @@ export const deleteSection = onCall(async (request) => {
     actorRole: "superadmin",
     targetType: "section",
     targetId: sectionId,
+    federationId: sectionFederationId,
   });
 
   return ok({ sectionId });
 });
 
-export const listPublicSections = onCall(async () => {
+export const listPublicSections = onCall(async (request) => {
+  const requestedFederationId = resolveFederationId(request.data?.federationId);
+  await ensureFederationExists(requestedFederationId);
   const snap = await db.collection("sections").orderBy("name", "asc").get();
-  const sections = snap.docs.map((doc) => {
-    const data = doc.data() as { name?: string; city?: string; region?: string };
-    return {
-      id: doc.id,
-      name: String(data.name ?? ""),
-      city: String(data.city ?? ""),
-      region: String(data.region ?? ""),
-    };
-  });
+  const sections = snap.docs
+    .map((doc) => {
+      const data = doc.data() as {
+        name?: string;
+        city?: string;
+        region?: string;
+        federationId?: string;
+      };
+      return {
+        id: doc.id,
+        name: String(data.name ?? ""),
+        city: String(data.city ?? ""),
+        region: String(data.region ?? ""),
+        federationId: resolveFederationId(data.federationId),
+      };
+    })
+    .filter((section) => section.federationId === requestedFederationId)
+    .map((section) => ({
+      id: section.id,
+      name: section.name,
+      city: section.city,
+      region: section.region,
+    }));
   return ok({ sections });
+});
+
+export const listPublicFederations = onCall(async () => {
+  await ensureDefaultFederations();
+  const snap = await db.collection("federations").where("isActive", "==", true).get();
+  const federations = snap.docs
+    .map((doc) => {
+      const data = doc.data() as { name?: string; countryCode?: string };
+      return {
+        id: doc.id,
+        name: String(data.name ?? doc.id),
+        countryCode: String(data.countryCode ?? ""),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
+  return ok({ federations });
+});
+
+export const createFederation = onCall(async (request) => {
+  const actorUid = request.auth?.uid;
+  requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  requireAnyRole(actorRole, ["superadmin"]);
+
+  const name = requireString(request.data?.name, "name");
+  const countryCode = optionalString(request.data?.countryCode)?.toUpperCase() ?? "";
+  const requestedId = optionalString(request.data?.federationId) ?? name;
+  const federationId = normalizeFederationId(requestedId);
+  if (!federationId) {
+    throw new HttpsError("invalid-argument", "Invalid federationId.");
+  }
+
+  const ref = db.collection("federations").doc(federationId);
+  await ref.set(
+    {
+      name,
+      countryCode,
+      isActive: true,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return ok({ federationId });
 });
 
 export const createMember = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
+  const targetFederationId = resolveTargetFederationForWrite(
+    actorRole,
+    actorFederationId,
+    request.data?.federationId,
+  );
+  await ensureFederationExists(targetFederationId);
 
   const email = requireString(request.data?.email, "email").toLowerCase();
   const firstName = requireString(request.data?.firstName, "firstName");
@@ -691,7 +1105,7 @@ export const createMember = onCall(async (request) => {
   const providedPassword = request.data?.password !== undefined ? requirePassword(request.data?.password, "password") : null;
   const status: MemberStatus = "active";
 
-  await ensureSectionExists(sectionId);
+  await ensureSectionExists(sectionId, targetFederationId);
   await ensureUniqueMemberEmail(email);
 
   const initialPassword = providedPassword ?? createTempPassword();
@@ -722,6 +1136,7 @@ export const createMember = onCall(async (request) => {
         city,
         phone,
         sectionId,
+        federationId: targetFederationId,
         role: "member",
         status,
         registrationSource: "admin_created",
@@ -744,11 +1159,12 @@ export const createMember = onCall(async (request) => {
         actorRole: actorRole ?? "admin",
         targetType: "member",
         targetId: user.uid,
+        federationId: targetFederationId,
         details: { email, status, registrationSource: "admin_created", votingApprovedByAdmin: true },
       });
     });
 
-    await auth.setCustomUserClaims(user.uid, { role: "member" });
+    await auth.setCustomUserClaims(user.uid, { role: "member", federationId: targetFederationId });
     return ok({
       memberId: user.uid,
       temporaryPassword: providedPassword ? null : initialPassword,
@@ -802,6 +1218,7 @@ export const setMyPassword = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   const newPassword = requirePassword(request.data?.newPassword, "newPassword");
 
   await auth.updateUser(actorUid, { password: newPassword });
@@ -823,6 +1240,7 @@ export const setMyPassword = onCall(async (request) => {
     actorRole: actorRole ?? "member",
     targetType: "member",
     targetId: actorUid,
+    federationId: actorFederationId,
     details: { selfService: true },
   });
 
@@ -833,6 +1251,7 @@ export const updateMember = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
 
   const memberId = requireString(request.data?.memberId, "memberId");
   const updatesInput = request.data?.updates as Record<string, unknown> | undefined;
@@ -880,6 +1299,7 @@ export const updateMember = onCall(async (request) => {
     const previous = memberSnap.data() as {
       role?: Role;
       status?: MemberStatus;
+      federationId?: string;
       registrationSource?: MemberRegistrationSource;
       votingApprovedByAdmin?: boolean;
       sectionId?: string;
@@ -888,6 +1308,8 @@ export const updateMember = onCall(async (request) => {
       city?: string;
       phone?: string;
     };
+    const memberFederationId = resolveFederationId(previous.federationId);
+    requireFederationAccess(actorRole, actorFederationId, memberFederationId);
     if (!isSelf && previous.role === "superadmin" && actorRole !== "superadmin") {
       throw new HttpsError("permission-denied", "ERROR_UNAUTHORIZED");
     }
@@ -902,6 +1324,10 @@ export const updateMember = onCall(async (request) => {
         const nextSectionSnap = await tx.get(nextSectionRef);
         if (!nextSectionSnap.exists) {
           throw new HttpsError("not-found", "ERROR_SECTION_NOT_FOUND");
+        }
+        const nextSectionFederationId = resolveFederationId(nextSectionSnap.data()?.federationId);
+        if (nextSectionFederationId !== memberFederationId) {
+          throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
         }
         tx.update(nextSectionRef, {
           memberCount: FieldValue.increment(1),
@@ -943,6 +1369,7 @@ export const updateMember = onCall(async (request) => {
       actorRole: actorRole ?? "member",
       targetType: "member",
       targetId: memberId,
+      federationId: memberFederationId,
       details: { fields: Object.keys(updates) },
     });
   });
@@ -954,7 +1381,14 @@ export const setContributionPolicy = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["superadmin"]);
+  const targetFederationId = resolveTargetFederationForWrite(
+    actorRole,
+    actorFederationId,
+    request.data?.federationId,
+  );
+  await ensureFederationExists(targetFederationId);
 
   const name = requireString(request.data?.name, "name");
   const amount = requireNumber(request.data?.amount, "amount");
@@ -971,11 +1405,14 @@ export const setContributionPolicy = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "ERROR_INVALID_GRACE_PERIOD");
   }
 
-  const activePolicies = await db.collection("contributionPolicies").where("isActive", "==", true).get();
+  const activePoliciesRaw = await db.collection("contributionPolicies").where("isActive", "==", true).get();
+  const activePolicies = activePoliciesRaw.docs.filter(
+    (doc) => resolveFederationId(doc.data().federationId) === targetFederationId,
+  );
   const policyRef = db.collection("contributionPolicies").doc();
   const batch = db.batch();
 
-  activePolicies.docs.forEach((doc) => {
+  activePolicies.forEach((doc) => {
     batch.update(doc.ref, {
       isActive: false,
       updatedAt: FieldValue.serverTimestamp(),
@@ -988,6 +1425,7 @@ export const setContributionPolicy = onCall(async (request) => {
     currency,
     periodicity,
     gracePeriodDays,
+    federationId: targetFederationId,
     isActive: true,
     createdBy: actorUid,
     createdAt: FieldValue.serverTimestamp(),
@@ -1000,6 +1438,7 @@ export const setContributionPolicy = onCall(async (request) => {
     actorRole: "superadmin",
     targetType: "policy",
     targetId: policyRef.id,
+    federationId: targetFederationId,
     details: {
       amount,
       currency,
@@ -1008,14 +1447,15 @@ export const setContributionPolicy = onCall(async (request) => {
     },
   });
 
-  if (!activePolicies.empty) {
+  if (activePolicies.length > 0) {
     writeAuditBatch(batch, {
       action: "policy.update",
       actorId: actorUid,
       actorRole: "superadmin",
       targetType: "policy",
       targetId: policyRef.id,
-      details: { previousActiveCount: activePolicies.size },
+      federationId: targetFederationId,
+      details: { previousActiveCount: activePolicies.length },
     });
   }
 
@@ -1027,6 +1467,7 @@ export const recordPayment = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const memberId = requireString(request.data?.memberId, "memberId");
@@ -1044,8 +1485,10 @@ export const recordPayment = onCall(async (request) => {
 
   const memberSnap = await db.collection("members").doc(memberId).get();
   if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
+  const memberFederationId = resolveFederationId(memberSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, memberFederationId);
 
-  const activePolicy = await getActiveContributionPolicy();
+  const activePolicy = await getActiveContributionPolicy(memberFederationId);
   if (!activePolicy) {
     throw new HttpsError("failed-precondition", "ERROR_POLICY_NOT_FOUND");
   }
@@ -1056,6 +1499,7 @@ export const recordPayment = onCall(async (request) => {
     policyId: activePolicy.id,
     amount,
     currency,
+    federationId: memberFederationId,
     periodStart,
     periodEnd,
     reference,
@@ -1064,7 +1508,7 @@ export const recordPayment = onCall(async (request) => {
     recordedAt: FieldValue.serverTimestamp(),
   });
 
-  const upToDate = await isContributionUpToDate(memberId);
+  const upToDate = await isContributionUpToDate(memberId, memberFederationId);
   await db.collection("members").doc(memberId).set(
     {
       contributionUpToDate: upToDate,
@@ -1079,6 +1523,7 @@ export const recordPayment = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "payment",
     targetId: paymentRef.id,
+    federationId: memberFederationId,
     details: { memberId, amount, currency, periodEnd: periodEnd.toISOString() },
   });
 
@@ -1089,7 +1534,14 @@ export const createCondition = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
+  const targetFederationId = resolveTargetFederationForWrite(
+    actorRole,
+    actorFederationId,
+    request.data?.federationId,
+  );
+  await ensureFederationExists(targetFederationId);
 
   const name = requireString(request.data?.name, "name");
   const description = requireString(request.data?.description, "description");
@@ -1105,6 +1557,7 @@ export const createCondition = onCall(async (request) => {
     type,
     validatedBy: "admin",
     validityDuration: validityDays,
+    federationId: targetFederationId,
     isActive: true,
     createdBy: actorUid,
     createdAt: FieldValue.serverTimestamp(),
@@ -1117,6 +1570,7 @@ export const createCondition = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "condition",
     targetId: ref.id,
+    federationId: targetFederationId,
     details: { name, type, validityDuration: validityDays },
   });
 
@@ -1127,6 +1581,7 @@ export const updateCondition = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const conditionId = requireString(request.data?.conditionId, "conditionId");
@@ -1150,6 +1605,8 @@ export const updateCondition = onCall(async (request) => {
   const ref = db.collection("conditions").doc(conditionId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError("not-found", "ERROR_CONDITION_NOT_FOUND");
+  const conditionFederationId = resolveFederationId(snap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, conditionFederationId);
 
   await ref.update({
     ...updates,
@@ -1162,6 +1619,7 @@ export const updateCondition = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "condition",
     targetId: conditionId,
+    federationId: conditionFederationId,
     details: { fields: Object.keys(updates) },
   });
 
@@ -1172,12 +1630,15 @@ export const deleteCondition = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const conditionId = requireString(request.data?.conditionId, "conditionId");
   const conditionRef = db.collection("conditions").doc(conditionId);
   const conditionSnap = await conditionRef.get();
   if (!conditionSnap.exists) throw new HttpsError("not-found", "ERROR_CONDITION_NOT_FOUND");
+  const conditionFederationId = resolveFederationId(conditionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, conditionFederationId);
 
   const electionsWithVoterCondition = await db
     .collection("elections")
@@ -1198,6 +1659,7 @@ export const deleteCondition = onCall(async (request) => {
     }
   >();
   electionsWithVoterCondition.docs.forEach((doc) => {
+    if (resolveFederationId(doc.data().federationId) !== conditionFederationId) return;
     electionOps.set(doc.id, {
       ref: doc.ref,
       removeVoterCondition: true,
@@ -1205,6 +1667,7 @@ export const deleteCondition = onCall(async (request) => {
     });
   });
   electionsWithCandidateCondition.docs.forEach((doc) => {
+    if (resolveFederationId(doc.data().federationId) !== conditionFederationId) return;
     const previous = electionOps.get(doc.id);
     electionOps.set(doc.id, {
       ref: doc.ref,
@@ -1226,7 +1689,10 @@ export const deleteCondition = onCall(async (request) => {
     }
     writer.update(op.ref, updates);
   });
-  memberConditionsSnap.docs.forEach((doc) => writer.delete(doc.ref));
+  memberConditionsSnap.docs.forEach((doc) => {
+    if (resolveFederationId(doc.data().federationId) !== conditionFederationId) return;
+    writer.delete(doc.ref);
+  });
   writer.delete(conditionRef);
   await writer.close();
 
@@ -1236,6 +1702,7 @@ export const deleteCondition = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "condition",
     targetId: conditionId,
+    federationId: conditionFederationId,
     details: {
       removedFromElections: electionOps.size,
       removedMemberValidations: memberConditionsSnap.size,
@@ -1253,6 +1720,7 @@ export const validateCondition = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const memberId = requireString(request.data?.memberId, "memberId");
@@ -1263,10 +1731,16 @@ export const validateCondition = onCall(async (request) => {
 
   const memberSnap = await db.collection("members").doc(memberId).get();
   if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
+  const memberFederationId = resolveFederationId(memberSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, memberFederationId);
   const conditionRef = db.collection("conditions").doc(conditionId);
   const conditionSnap = await conditionRef.get();
   if (!conditionSnap.exists) {
     throw new HttpsError("not-found", "ERROR_CONDITION_NOT_FOUND");
+  }
+  const conditionFederationId = resolveFederationId(conditionSnap.data()?.federationId);
+  if (conditionFederationId !== memberFederationId) {
+    throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
   }
 
   const condition = conditionSnap.data() as { validityDuration?: number };
@@ -1281,6 +1755,7 @@ export const validateCondition = onCall(async (request) => {
     {
       memberId,
       conditionId,
+      federationId: memberFederationId,
       validated,
       validatedBy: actorUid,
       validatedAt: FieldValue.serverTimestamp(),
@@ -1298,6 +1773,7 @@ export const validateCondition = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "condition",
     targetId: conditionId,
+    federationId: memberFederationId,
     details: { memberId, note },
   });
 
@@ -1308,6 +1784,7 @@ export const computeEligibility = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
 
   const memberId = requireString(request.data?.memberId, "memberId");
   const electionId = optionalString(request.data?.electionId);
@@ -1318,12 +1795,15 @@ export const computeEligibility = onCall(async (request) => {
   const memberSnap = await db.collection("members").doc(memberId).get();
   if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
   const member = memberSnap.data() as {
+    federationId?: string;
     status?: MemberStatus;
     registrationSource?: MemberRegistrationSource;
     votingApprovedByAdmin?: boolean;
     joinedAt?: { toDate?: () => Date };
     sectionId?: string;
   };
+  const memberFederationId = resolveFederationId(member.federationId);
+  requireFederationAccess(actorRole, actorFederationId, memberFederationId);
 
   const registrationSource = normalizeRegistrationSource(member.registrationSource);
   const votingApprovedByAdmin = member.votingApprovedByAdmin !== false;
@@ -1359,7 +1839,7 @@ export const computeEligibility = onCall(async (request) => {
     return ok({ eligible: true, reasons });
   }
 
-  const contributionOk = await isContributionUpToDate(memberId);
+  const contributionOk = await isContributionUpToDate(memberId, memberFederationId);
   reasons.push({
     condition: "contribution",
     met: contributionOk,
@@ -1373,10 +1853,14 @@ export const computeEligibility = onCall(async (request) => {
       throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
     }
     const election = electionSnap.data() as {
+      federationId?: string;
       minSeniority?: number;
       allowedSectionIds?: string[] | null;
       voterConditionIds?: string[];
     };
+    if (resolveFederationId(election.federationId) !== memberFederationId) {
+      throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+    }
 
     const joinedAtDate = member.joinedAt?.toDate?.();
     const minSeniorityDays = Number(election.minSeniority ?? 0);
@@ -1398,10 +1882,12 @@ export const computeEligibility = onCall(async (request) => {
       detail: sectionOk ? "Section autorisee" : "Section non autorisee",
     });
 
-    requiredConditionIds = await getActiveConditionIds(election.voterConditionIds ?? []);
+    requiredConditionIds = await getActiveConditionIds(election.voterConditionIds ?? [], memberFederationId);
   } else {
     const activeConditions = await db.collection("conditions").where("isActive", "==", true).get();
-    requiredConditionIds = activeConditions.docs.map((doc) => doc.id);
+    requiredConditionIds = activeConditions.docs
+      .filter((doc) => resolveFederationId(doc.data().federationId) === memberFederationId)
+      .map((doc) => doc.id);
   }
 
   for (const conditionId of requiredConditionIds) {
@@ -1429,7 +1915,14 @@ export const createElection = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
+  const targetFederationId = resolveTargetFederationForWrite(
+    actorRole,
+    actorFederationId,
+    request.data?.federationId,
+  );
+  await ensureFederationExists(targetFederationId);
 
   const title = requireString(request.data?.title, "title");
   const description = optionalString(request.data?.description) ?? "";
@@ -1453,14 +1946,15 @@ export const createElection = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "ERROR_INVALID_DATES");
   }
 
-  await ensureConditionIdsExist([...new Set([...voterConditionIds, ...candidateConditionIds])]);
-  await ensureSectionIdsExist(allowedSectionIdsRaw);
+  await ensureConditionIdsExist([...new Set([...voterConditionIds, ...candidateConditionIds])], targetFederationId);
+  await ensureSectionIdsExist(allowedSectionIdsRaw, targetFederationId);
 
   const ref = db.collection("elections").doc();
   await ref.set({
     title,
     description,
     type,
+    federationId: targetFederationId,
     status: "draft",
     startAt,
     endAt,
@@ -1484,6 +1978,7 @@ export const createElection = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "election",
     targetId: ref.id,
+    federationId: targetFederationId,
     details: { title, startAt: startAt.toISOString(), endAt: endAt.toISOString() },
   });
 
@@ -1494,6 +1989,7 @@ export const updateElection = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
@@ -1504,10 +2000,13 @@ export const updateElection = onCall(async (request) => {
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
   const election = electionSnap.data() as {
+    federationId?: string;
     status?: string;
     startAt?: { toDate?: () => Date };
     endAt?: { toDate?: () => Date };
   };
+  const electionFederationId = resolveFederationId(election.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
   const status = String(election.status ?? "draft");
   if (status !== "draft" && status !== "open" && actorRole !== "superadmin") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
@@ -1563,10 +2062,10 @@ export const updateElection = onCall(async (request) => {
   if (Array.isArray(updates.voterConditionIds) || Array.isArray(updates.candidateConditionIds)) {
     const voterIds = Array.isArray(updates.voterConditionIds) ? updates.voterConditionIds : [];
     const candidateIds = Array.isArray(updates.candidateConditionIds) ? updates.candidateConditionIds : [];
-    await ensureConditionIdsExist([...new Set([...voterIds, ...candidateIds])]);
+    await ensureConditionIdsExist([...new Set([...voterIds, ...candidateIds])], electionFederationId);
   }
   if (Array.isArray(updates.allowedSectionIds)) {
-    await ensureSectionIdsExist(updates.allowedSectionIds);
+    await ensureSectionIdsExist(updates.allowedSectionIds, electionFederationId);
   }
 
   updates.updatedAt = FieldValue.serverTimestamp();
@@ -1577,6 +2076,7 @@ export const updateElection = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "election",
     targetId: electionId,
+    federationId: electionFederationId,
     details: { fields: Object.keys(updates) },
   });
 
@@ -1587,6 +2087,7 @@ export const addCandidate = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
@@ -1600,8 +2101,11 @@ export const addCandidate = onCall(async (request) => {
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
   const election = electionSnap.data() as {
+    federationId?: string;
     status?: string;
   };
+  const electionFederationId = resolveFederationId(election.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
   if (election.status !== "draft") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_DRAFT");
   }
@@ -1618,11 +2122,15 @@ export const addCandidate = onCall(async (request) => {
   const memberSnap = await db.collection("members").doc(memberId).get();
   if (!memberSnap.exists) throw new HttpsError("not-found", "ERROR_MEMBER_NOT_FOUND");
   const member = memberSnap.data() as {
+    federationId?: string;
     firstName?: string;
     lastName?: string;
     sectionId?: string;
     role?: Role;
   };
+  if (resolveFederationId(member.federationId) !== electionFederationId) {
+    throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+  }
   if (member.role === "superadmin") {
     throw new HttpsError("permission-denied", "ERROR_MEMBER_NOT_ALLOWED");
   }
@@ -1641,6 +2149,7 @@ export const addCandidate = onCall(async (request) => {
     projectSummary,
     videoUrl,
     photoUrl,
+    federationId: electionFederationId,
     status: "proposed",
     displayOrder: 9999,
     addedBy: actorUid,
@@ -1654,6 +2163,7 @@ export const addCandidate = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "candidate",
     targetId: candidateRef.id,
+    federationId: electionFederationId,
     details: { electionId, memberId },
   });
 
@@ -1663,6 +2173,8 @@ export const addCandidate = onCall(async (request) => {
 export const getMyCandidateSpaces = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
 
   const groupSnap = await db.collectionGroup("candidates").where("memberId", "==", actorUid).get();
   const candidacies: Array<{
@@ -1684,7 +2196,9 @@ export const getMyCandidateSpaces = onCall(async (request) => {
     if (!electionId) continue;
     const electionSnap = await db.collection("elections").doc(electionId).get();
     if (!electionSnap.exists) continue;
-    const election = electionSnap.data() as { title?: string; status?: string };
+    const election = electionSnap.data() as { title?: string; status?: string; federationId?: string };
+    const electionFederationId = resolveFederationId(election.federationId);
+    if (!canAccessFederation(actorRole, actorFederationId, electionFederationId)) continue;
     const candidate = doc.data() as {
       displayName?: string;
       sectionName?: string;
@@ -1718,6 +2232,7 @@ export const updateCandidatePresentation = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const candidateId = requireString(request.data?.candidateId, "candidateId");
@@ -1730,6 +2245,8 @@ export const updateCandidatePresentation = onCall(async (request) => {
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
   const election = electionSnap.data() as { status?: string };
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
   const electionStatus = String(election.status ?? "draft");
   if (!["draft", "open"].includes(electionStatus)) {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
@@ -1738,7 +2255,10 @@ export const updateCandidatePresentation = onCall(async (request) => {
   const candidateRef = db.collection(`elections/${electionId}/candidates`).doc(candidateId);
   const candidateSnap = await candidateRef.get();
   if (!candidateSnap.exists) throw new HttpsError("not-found", "ERROR_CANDIDATE_NOT_FOUND");
-  const candidate = candidateSnap.data() as { memberId?: string };
+  const candidate = candidateSnap.data() as { memberId?: string; federationId?: string };
+  if (resolveFederationId(candidate.federationId) !== electionFederationId) {
+    throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+  }
 
   const isOwner = String(candidate.memberId ?? "") === actorUid;
   const isAdmin = actorRole === "admin" || actorRole === "superadmin";
@@ -1760,6 +2280,7 @@ export const updateCandidatePresentation = onCall(async (request) => {
     actorRole: actorRole ?? "member",
     targetType: "candidate",
     targetId: candidateId,
+    federationId: electionFederationId,
     details: {
       electionId,
       updatedByCandidate: isOwner,
@@ -1775,6 +2296,7 @@ export const validateCandidate = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
@@ -1784,6 +2306,8 @@ export const validateCandidate = onCall(async (request) => {
   const ref = db.collection(`elections/${electionId}/candidates`).doc(candidateId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError("not-found", "ERROR_CANDIDATE_NOT_FOUND");
+  const candidateFederationId = resolveFederationId(snap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, candidateFederationId);
 
   await ref.update({
     status,
@@ -1795,6 +2319,7 @@ export const validateCandidate = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "candidate",
     targetId: candidateId,
+    federationId: candidateFederationId,
     details: { electionId },
   });
 
@@ -1805,6 +2330,7 @@ export const removeCandidate = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
@@ -1812,6 +2338,8 @@ export const removeCandidate = onCall(async (request) => {
   const electionRef = db.collection("elections").doc(electionId);
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
   const status = String(electionSnap.data()?.status ?? "draft");
   if (status !== "draft" && actorRole !== "superadmin") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_DRAFT");
@@ -1828,6 +2356,7 @@ export const removeCandidate = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "candidate",
     targetId: candidateId,
+    federationId: electionFederationId,
     details: { electionId },
   });
   return ok({ electionId, candidateId });
@@ -1837,6 +2366,7 @@ export const openElection = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
@@ -1844,11 +2374,14 @@ export const openElection = onCall(async (request) => {
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
   const election = electionSnap.data() as {
+    federationId?: string;
     status?: string;
     voterConditionIds?: string[];
     minSeniority?: number;
     allowedSectionIds?: string[] | null;
   };
+  const electionFederationId = resolveFederationId(election.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
   const previousStatus = String(election.status ?? "draft");
   if (previousStatus !== "draft" && previousStatus !== "closed") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_LOCKED");
@@ -1869,8 +2402,10 @@ export const openElection = onCall(async (request) => {
   const membersSnap = await db.collection("members").where("status", "==", "active").get();
   let totalEligibleVoters = 0;
   for (const memberDoc of membersSnap.docs) {
+    if (resolveFederationId(memberDoc.data().federationId) !== electionFederationId) continue;
     const eligible = await checkMemberAgainstRules({
       memberId: memberDoc.id,
+      federationId: electionFederationId,
       conditionIds: election.voterConditionIds ?? [],
       minSeniority: election.minSeniority ?? 0,
       allowedSectionIds: election.allowedSectionIds ?? null,
@@ -1892,6 +2427,7 @@ export const openElection = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "election",
     targetId: electionId,
+    federationId: electionFederationId,
     details: { totalEligibleVoters, previousStatus },
   });
 
@@ -1903,12 +2439,15 @@ export const closeElection = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const electionRef = db.collection("elections").doc(electionId);
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
   const election = electionSnap.data() as { status?: string };
   if (election.status !== "open") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_OPEN");
@@ -1925,6 +2464,7 @@ export const closeElection = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "election",
     targetId: electionId,
+    federationId: electionFederationId,
   });
   return ok({ electionId });
 });
@@ -1933,24 +2473,32 @@ export const castVote = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
-  requireAnyRole(actorRole, ["member", "admin"]);
+  const actorFederationId = await getRequesterFederationId(actorUid);
+  requireAnyRole(actorRole, ["member", "admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const candidateId = requireString(request.data?.candidateId, "candidateId");
+  const voteChoiceType = classifyBallotCandidateId(candidateId);
+  const storedCandidateId = voteChoiceType === "blank" ? BLANK_BALLOT_ID : candidateId;
 
   const electionRef = db.collection("elections").doc(electionId);
-  const candidateRef = db.collection(`elections/${electionId}/candidates`).doc(candidateId);
+  const candidateRef = db.collection(`elections/${electionId}/candidates`).doc(storedCandidateId);
   const tokenIndexRef = db.collection(`elections/${electionId}/tokenIndex`).doc(actorUid);
 
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
   const election = electionSnap.data() as {
+    federationId?: string;
     status?: string;
     endAt?: { toDate?: () => Date };
     voterConditionIds?: string[];
     minSeniority?: number;
     allowedSectionIds?: string[] | null;
   };
+  const electionFederationId = resolveFederationId(election.federationId);
+  if (actorRole !== "superadmin" && electionFederationId !== actorFederationId) {
+    throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+  }
 
   if (election.status !== "open") {
     throw new HttpsError("failed-precondition", "ERROR_ELECTION_NOT_OPEN");
@@ -1962,6 +2510,7 @@ export const castVote = onCall(async (request) => {
 
   const strictEligibility = await checkMemberAgainstRules({
     memberId: actorUid,
+    federationId: electionFederationId,
     conditionIds: election.voterConditionIds ?? [],
     minSeniority: election.minSeniority ?? 0,
     allowedSectionIds: election.allowedSectionIds ?? null,
@@ -1990,9 +2539,11 @@ export const castVote = onCall(async (request) => {
       throw new HttpsError("failed-precondition", "ERROR_ELECTION_CLOSED");
     }
 
-    const candidateSnap = await tx.get(candidateRef);
-    if (!candidateSnap.exists || candidateSnap.data()?.status !== "validated") {
-      throw new HttpsError("failed-precondition", "ERROR_CANDIDATE_NOT_FOUND");
+    if (voteChoiceType !== "blank") {
+      const candidateSnap = await tx.get(candidateRef);
+      if (!candidateSnap.exists || candidateSnap.data()?.status !== "validated") {
+        throw new HttpsError("failed-precondition", "ERROR_CANDIDATE_NOT_FOUND");
+      }
     }
 
     const tokenIndexSnap = await tx.get(tokenIndexRef);
@@ -2010,13 +2561,17 @@ export const castVote = onCall(async (request) => {
     const ballotRef = db.collection(`elections/${electionId}/ballots`).doc(voteToken);
     tx.set(tokenIndexRef, {
       voteToken,
+      federationId: electionFederationId,
       issuedAt: FieldValue.serverTimestamp(),
       hasVoted: true,
       votedAt: FieldValue.serverTimestamp(),
+      candidateId: storedCandidateId,
+      candidateDisplayName: voteChoiceType === "blank" ? "Bulletin blanc" : undefined,
     });
     tx.set(ballotRef, {
       voteToken,
-      candidateId,
+      federationId: electionFederationId,
+      candidateId: storedCandidateId,
       castAt: FieldValue.serverTimestamp(),
     });
     tx.update(electionRef, {
@@ -2030,7 +2585,11 @@ export const castVote = onCall(async (request) => {
       actorRole: actorRole ?? "member",
       targetType: "election",
       targetId: electionId,
-      details: { memberId: actorUid },
+      federationId: electionFederationId,
+      details: {
+        memberId: actorUid,
+        choiceType: voteChoiceType === "blank" ? "blank_ballot" : "candidate",
+      },
     });
   });
 
@@ -2040,10 +2599,16 @@ export const castVote = onCall(async (request) => {
 export const getMyVoteStatus = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
+  const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const electionSnap = await db.collection("elections").doc(electionId).get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  if (!canAccessFederation(actorRole, actorFederationId, electionFederationId)) {
+    throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+  }
 
   const tokenIndexSnap = await db.collection(`elections/${electionId}/tokenIndex`).doc(actorUid).get();
   if (!tokenIndexSnap.exists) {
@@ -2081,6 +2646,10 @@ export const getMyVoteStatus = onCall(async (request) => {
     const ballotSnap = await db.collection(`elections/${electionId}/ballots`).doc(tokenData.voteToken).get();
     candidateId = String(ballotSnap.data()?.candidateId ?? "");
   }
+  if (classifyBallotCandidateId(candidateId) === "blank") {
+    candidateId = BLANK_BALLOT_ID;
+    candidateDisplayName = "Bulletin blanc";
+  }
   if (candidateId && !candidateDisplayName) {
     const candidateSnap = await db.collection(`elections/${electionId}/candidates`).doc(candidateId).get();
     candidateDisplayName = String(candidateSnap.data()?.displayName ?? "");
@@ -2099,11 +2668,14 @@ export const getElectionScores = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const electionSnap = await db.collection("elections").doc(electionId).get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
 
   const election = electionSnap.data() as {
     title?: string;
@@ -2129,9 +2701,14 @@ export const getElectionScores = onCall(async (request) => {
     });
   });
 
+  let blankVotesCount = 0;
   ballotsSnap.docs.forEach((doc) => {
     const candidateId = String(doc.data().candidateId ?? "");
-    if (!candidateId) return;
+    const ballotType = classifyBallotCandidateId(candidateId);
+    if (ballotType === "blank") {
+      blankVotesCount += 1;
+      return;
+    }
     const current = candidateMap.get(candidateId);
     if (current) {
       current.voteCount += 1;
@@ -2149,8 +2726,13 @@ export const getElectionScores = onCall(async (request) => {
 
   const totalVotesCast = ballotsSnap.size;
   const totalEligible = Number(election.totalEligibleVoters ?? 0);
-  const participationBase = Math.max(totalEligible, totalVotesCast);
-  const participationRate = participationBase > 0 ? (totalVotesCast / participationBase) * 100 : 0;
+  const validVotesCount = Math.max(0, totalVotesCast - blankVotesCount);
+  const voteStats = buildElectionVoteStats(
+    totalEligible,
+    totalVotesCast,
+    validVotesCount,
+    blankVotesCount,
+  );
 
   const scores = [...candidateMap.values()]
     .map((entry) => ({
@@ -2167,9 +2749,7 @@ export const getElectionScores = onCall(async (request) => {
       electionId,
       title: election.title ?? "",
       status: election.status ?? "draft",
-      totalEligibleVoters: totalEligible,
-      totalVotesCast,
-      participationRate,
+      ...voteStats,
     },
     scores,
   });
@@ -2179,11 +2759,14 @@ export const verifyElectionVoteIntegrity = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const electionSnap = await db.collection("elections").doc(electionId).get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
 
   const election = electionSnap.data() as {
     title?: string;
@@ -2294,6 +2877,7 @@ export const verifyElectionVoteIntegrity = onCall(async (request) => {
         actorRole: actorRole ?? "admin",
         targetType: "election",
         targetId: electionId,
+        federationId: electionFederationId,
         details: {
           issues,
           ballotsCount,
@@ -2328,12 +2912,15 @@ export const publishResults = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const electionRef = db.collection("elections").doc(electionId);
   const electionSnap = await electionRef.get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
 
   const election = electionSnap.data() as { status?: string; totalVotesCast?: number };
   if (election.status !== "closed") {
@@ -2348,18 +2935,26 @@ export const publishResults = onCall(async (request) => {
   });
 
   const counts = new Map<string, number>();
+  let blankVotesCount = 0;
   ballotsSnap.docs.forEach((ballot) => {
     const candidateId = String(ballot.data().candidateId ?? "");
+    const ballotType = classifyBallotCandidateId(candidateId);
+    if (ballotType === "blank") {
+      blankVotesCount += 1;
+      return;
+    }
     counts.set(candidateId, (counts.get(candidateId) ?? 0) + 1);
   });
 
   const totalVotes = ballotsSnap.size;
+  const validVotesCount = Math.max(0, totalVotes - blankVotesCount);
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const batch = db.batch();
 
   sorted.forEach(([candidateId, voteCount], index) => {
     batch.set(db.collection(`elections/${electionId}/results`).doc(candidateId), {
       candidateId,
+      federationId: electionFederationId,
       displayName: candidateName.get(candidateId) ?? candidateId,
       voteCount,
       percentage: totalVotes > 0 ? (voteCount / totalVotes) * 100 : 0,
@@ -2370,6 +2965,8 @@ export const publishResults = onCall(async (request) => {
 
   batch.update(electionRef, {
     status: "published",
+    validVotesCount,
+    blankVotesCount,
     publishedAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -2379,47 +2976,102 @@ export const publishResults = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "election",
     targetId: electionId,
-    details: { totalVotesCast: election.totalVotesCast ?? totalVotes },
+    federationId: electionFederationId,
+    details: {
+      totalVotesCast: election.totalVotesCast ?? totalVotes,
+      validVotesCount,
+      blankVotesCount,
+    },
   });
   await batch.commit();
 
-  return ok({ electionId, totalVotes });
+  return ok({ electionId, totalVotes, validVotesCount, blankVotesCount });
 });
 
 export const getResults = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const electionSnap = await db.collection("elections").doc(electionId).get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  if (!canAccessFederation(actorRole, actorFederationId, electionFederationId)) {
+    throw new HttpsError("permission-denied", "ERROR_FEDERATION_SCOPE");
+  }
 
   const election = electionSnap.data() as {
     title?: string;
     status?: string;
     totalEligibleVoters?: number;
     totalVotesCast?: number;
+    validVotesCount?: number;
+    blankVotesCount?: number;
   };
   if (election.status !== "published" && actorRole !== "admin" && actorRole !== "superadmin") {
     throw new HttpsError("permission-denied", "ERROR_RESULTS_NOT_PUBLISHED");
   }
 
   const resultsSnap = await db.collection(`elections/${electionId}/results`).orderBy("rank", "asc").get();
-  const results = resultsSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
   const totalEligible = Number(election.totalEligibleVoters ?? 0);
   const totalVotesCast = Number(election.totalVotesCast ?? 0);
-  const participationBase = Math.max(totalEligible, totalVotesCast);
-  const participationRate = participationBase > 0 ? (totalVotesCast / participationBase) * 100 : 0;
+  let derivedBlankVotesCount = 0;
+  const rawResults: Array<{
+    id: string;
+    rank?: number;
+    displayName?: string;
+    voteCount?: number;
+    percentage?: number;
+    [key: string]: unknown;
+  }> = [];
+  resultsSnap.docs.forEach((doc) => {
+    const row: {
+      id: string;
+      rank?: number;
+      displayName?: string;
+      voteCount?: number;
+      percentage?: number;
+      [key: string]: unknown;
+    } = {
+      id: doc.id,
+      ...(doc.data() as Record<string, unknown>),
+    };
+    const ballotType = classifyBallotCandidateId(row.id);
+    const voteCount = Number(row.voteCount ?? 0);
+    if (ballotType === "blank") {
+      derivedBlankVotesCount += voteCount;
+      return;
+    }
+    rawResults.push(row);
+  });
+
+  const derivedValidVotesCount = rawResults.reduce((sum, row) => sum + Number(row.voteCount ?? 0), 0);
+  const validVotesCount = Number.isFinite(Number(election.validVotesCount))
+    ? Number(election.validVotesCount ?? 0)
+    : derivedValidVotesCount;
+  const blankVotesCount = Number.isFinite(Number(election.blankVotesCount))
+    ? Number(election.blankVotesCount ?? 0)
+    : derivedBlankVotesCount;
+  const voteStats = buildElectionVoteStats(
+    totalEligible,
+    totalVotesCast,
+    validVotesCount,
+    blankVotesCount,
+  );
+  const results = rawResults.map((row, index) => ({
+    ...row,
+    rank: Number(row.rank ?? index + 1),
+    percentage: totalVotesCast > 0 ? (Number(row.voteCount ?? 0) / totalVotesCast) * 100 : 0,
+  }));
 
   return ok({
     election: {
       electionId,
       title: election.title ?? "",
       status: election.status ?? "draft",
-      totalEligibleVoters: totalEligible,
-      totalVotesCast,
-      participationRate,
+      ...voteStats,
     },
     results,
   });
@@ -2429,12 +3081,15 @@ export const exportResults = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const format = requireEnum<"csv" | "pdf">(request.data?.format, "format", ["csv", "pdf"]);
   const electionSnap = await db.collection("elections").doc(electionId).get();
   if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
+  requireFederationAccess(actorRole, actorFederationId, electionFederationId);
   const resultsSnap = await db.collection(`elections/${electionId}/results`).orderBy("rank", "asc").get();
   const resultRows = resultsSnap.docs.map((doc) => ({
     rank: Number(doc.data().rank ?? 0),
@@ -2459,6 +3114,7 @@ export const exportResults = onCall(async (request) => {
     actorRole: actorRole ?? "admin",
     targetType: "export",
     targetId: electionId,
+    federationId: electionFederationId,
     details: { format },
   });
 
@@ -2469,9 +3125,15 @@ export const getAuditLogs = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["admin", "superadmin"]);
 
   const actionFilter = optionalString(request.data?.action);
+  const requestedFederationFilter = optionalString(request.data?.federationId);
+  const federationFilter =
+    actorRole === "superadmin"
+      ? resolveFederationId(requestedFederationFilter)
+      : actorFederationId;
   const limit = Math.min(Number(request.data?.limit ?? 100), 250);
 
   let logsQuery = db.collection("auditLogs").orderBy("timestamp", "desc").limit(limit);
@@ -2567,6 +3229,13 @@ export const getAuditLogs = onCall(async (request) => {
 
   logs = logs
     .filter((log) => {
+      const logFederationId = resolveFederationId(log.federationId);
+      if (actorRole !== "superadmin" && logFederationId !== actorFederationId) {
+        return false;
+      }
+      if (actorRole === "superadmin" && requestedFederationFilter && logFederationId !== federationFilter) {
+        return false;
+      }
       const actionName = String(log.action ?? "");
       if (actionName === "vote.integrity_check") {
         return false;
@@ -2667,11 +3336,15 @@ export const auditCheckVoter = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const memberId = requireString(request.data?.memberId, "memberId");
   const reason = requireAuditReason(request.data?.reason);
+  const electionSnap = await db.collection("elections").doc(electionId).get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
 
   const tokenSnap = await db.collection(`elections/${electionId}/tokenIndex`).doc(memberId).get();
   const token = tokenSnap.data() as { hasVoted?: boolean; votedAt?: { toDate?: () => Date } };
@@ -2682,6 +3355,7 @@ export const auditCheckVoter = onCall(async (request) => {
     actorRole: "superadmin",
     targetType: "audit",
     targetId: electionId,
+    federationId: electionFederationId || actorFederationId,
     details: { memberId, reason, scope: "check_voter" },
   });
 
@@ -2695,11 +3369,15 @@ export const auditRevealVote = onCall(async (request) => {
   const actorUid = request.auth?.uid;
   requireAuth(actorUid);
   const actorRole = await getRequesterRole(actorUid);
+  const actorFederationId = await getRequesterFederationId(actorUid);
   requireAnyRole(actorRole, ["superadmin"]);
 
   const electionId = requireString(request.data?.electionId, "electionId");
   const memberId = requireString(request.data?.memberId, "memberId");
   const reason = requireAuditReason(request.data?.reason);
+  const electionSnap = await db.collection("elections").doc(electionId).get();
+  if (!electionSnap.exists) throw new HttpsError("not-found", "ERROR_ELECTION_NOT_FOUND");
+  const electionFederationId = resolveFederationId(electionSnap.data()?.federationId);
 
   const tokenSnap = await db.collection(`elections/${electionId}/tokenIndex`).doc(memberId).get();
   const token = tokenSnap.data() as { voteToken?: string; hasVoted?: boolean; votedAt?: { toDate?: () => Date } };
@@ -2710,6 +3388,7 @@ export const auditRevealVote = onCall(async (request) => {
       actorRole: "superadmin",
       targetType: "audit",
       targetId: electionId,
+      federationId: electionFederationId || actorFederationId,
       details: { memberId, reason, scope: "reveal_vote_none" },
     });
     return ok({ hasVoted: false });
@@ -2729,6 +3408,7 @@ export const auditRevealVote = onCall(async (request) => {
     actorRole: "superadmin",
     targetType: "audit",
     targetId: electionId,
+    federationId: electionFederationId || actorFederationId,
     details: { memberId, reason, scope: "reveal_vote" },
   });
 
@@ -2739,3 +3419,15 @@ export const auditRevealVote = onCall(async (request) => {
     votedAt: token.votedAt?.toDate?.()?.toISOString() ?? null,
   });
 });
+
+export const syncBelgiqueElectionWindows = onSchedule(
+  {
+    schedule: "every 5 minutes",
+    timeZone: "Europe/Paris",
+    region: "us-central1",
+  },
+  async () => {
+    const result = await runBelgiqueScheduledElectionWindow(new Date());
+    logger.info("syncBelgiqueElectionWindows", result);
+  },
+);

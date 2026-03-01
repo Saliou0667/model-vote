@@ -18,6 +18,7 @@ import {
   MemberCandidateSpacePage,
   MemberProfilePage,
   MemberResultsPage,
+  MemberScoresPage,
   MemberVotePage,
   SuperAdminAdminsPage,
   SuperAdminAuditPage,
@@ -58,6 +59,7 @@ export function AppRouter() {
         <Route path="candidate-space" element={<MemberCandidateSpacePage />} />
         <Route path="eligibility" element={<MemberEligibilityPage />} />
         <Route path="vote" element={<MemberVotePage />} />
+        <Route path="scores" element={<MemberScoresPage />} />
         <Route path="results" element={<MemberResultsPage />} />
       </Route>
 

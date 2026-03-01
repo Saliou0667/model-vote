@@ -6,12 +6,14 @@ export type Section = {
   city: string;
   region?: string;
   memberCount?: number;
+  federationId?: string;
 };
 
 export type Member = {
   id: string;
   uid: string;
   email: string;
+  federationId?: string;
   firstName: string;
   lastName: string;
   city?: string;
@@ -31,6 +33,7 @@ export type Member = {
 
 export type ContributionPolicy = {
   id: string;
+  federationId?: string;
   name: string;
   amount: number;
   currency: string;
@@ -41,6 +44,7 @@ export type ContributionPolicy = {
 
 export type PaymentRecord = {
   id: string;
+  federationId?: string;
   memberId: string;
   policyId: string;
   amount: number;
@@ -55,6 +59,7 @@ export type PaymentRecord = {
 
 export type Condition = {
   id: string;
+  federationId?: string;
   name: string;
   description: string;
   type: "checkbox" | "date" | "amount" | "file" | "text";
@@ -64,6 +69,7 @@ export type Condition = {
 
 export type MemberCondition = {
   id: string;
+  federationId?: string;
   memberId: string;
   conditionId: string;
   validated: boolean;
@@ -76,6 +82,7 @@ export type MemberCondition = {
 
 export type Election = {
   id: string;
+  federationId?: string;
   title: string;
   description: string;
   type: "federal" | "section" | "other";
@@ -92,6 +99,7 @@ export type Election = {
 
 export type Candidate = {
   id: string;
+  federationId?: string;
   memberId: string;
   displayName: string;
   sectionName: string;

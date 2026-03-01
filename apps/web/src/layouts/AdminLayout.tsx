@@ -16,23 +16,30 @@ import {
   BottomNavigationAction,
   Box,
   Button,
+  FormControl,
+  FormHelperText,
   Chip,
   Divider,
   Drawer,
   IconButton,
+  InputLabel,
   List,
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Toolbar,
   Typography,
   useMediaQuery,
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import { callFunction, getErrorMessage } from "../api/callables";
 import { useAuth } from "../hooks/useAuth";
 
 const drawerWidth = 280;
@@ -43,7 +50,28 @@ export function AdminLayout() {
   const isDesktop = useMediaQuery(theme.breakpoints.up("md"));
   const location = useLocation();
   const navigate = useNavigate();
-  const { role, signOutUser, user } = useAuth();
+  const queryClient = useQueryClient();
+  const { role, signOutUser, user, federationScopeId, setFederationScope } = useAuth();
+  const federationsQuery = useQuery({
+    queryKey: ["publicFederations"],
+    queryFn: async () =>
+      (
+        await callFunction<Record<string, never>, { federations: Array<{ id: string; name: string; countryCode?: string }> }>(
+          "listPublicFederations",
+          {},
+        )
+      ).federations,
+    enabled: role === "superadmin",
+  });
+
+  useEffect(() => {
+    if (role !== "superadmin" || !federationsQuery.data || federationsQuery.data.length === 0) return;
+    const exists = federationsQuery.data.some((federation) => federation.id === federationScopeId);
+    if (exists) return;
+    setFederationScope(federationsQuery.data[0].id);
+  }, [federationScopeId, federationsQuery.data, role, setFederationScope]);
+  const federationOptions = federationsQuery.data ?? [];
+  const selectedFederationId = federationOptions.some((federation) => federation.id === federationScopeId) ? federationScopeId : "";
 
   const navItems = useMemo(() => {
     const items = [
@@ -53,6 +81,7 @@ export function AdminLayout() {
       { label: "Conditions", mobileLabel: "Conditions", to: "/admin/conditions", icon: <HowToRegRoundedIcon fontSize="small" /> },
       { label: "Cotisations", mobileLabel: "Cotis.", to: "/admin/contributions", icon: <TuneRoundedIcon fontSize="small" /> },
       { label: "Elections", mobileLabel: "Elections", to: "/admin/elections", icon: <BallotRoundedIcon fontSize="small" /> },
+      { label: "Vote", mobileLabel: "Vote", to: "/admin/vote", icon: <BallotRoundedIcon fontSize="small" /> },
       { label: "Scores", mobileLabel: "Scores", to: "/admin/scores", icon: <LeaderboardRoundedIcon fontSize="small" /> },
       { label: "Candidats", mobileLabel: "Candidats", to: "/admin/candidates", icon: <CampaignRoundedIcon fontSize="small" /> },
       { label: "Logs", mobileLabel: "Logs", to: "/admin/logs", icon: <HistoryEduRoundedIcon fontSize="small" /> },
@@ -86,7 +115,7 @@ export function AdminLayout() {
   const mobileNavItems = useMemo(
     () =>
       navItems.filter((item) =>
-        ["/admin", "/admin/members", "/admin/scores", "/admin/candidates", "/admin/conditions"].includes(item.to),
+        ["/admin", "/admin/members", "/admin/vote", "/admin/scores", "/admin/candidates", "/admin/conditions"].includes(item.to),
       ),
     [navItems],
   );
@@ -223,6 +252,44 @@ export function AdminLayout() {
               sx={{ display: { xs: "none", sm: "inline-flex" } }}
             />
           </Stack>
+          {role === "superadmin" ? (
+            <FormControl
+              size="small"
+              error={Boolean(federationsQuery.error)}
+              sx={{ minWidth: 170, display: { xs: "none", sm: "inline-flex" } }}
+            >
+              <InputLabel id="federation-scope">Federation</InputLabel>
+              <Select
+                labelId="federation-scope"
+                label="Federation"
+                value={selectedFederationId}
+                displayEmpty
+                renderValue={(selected) => {
+                  if (!selected) {
+                    if (federationsQuery.isLoading) return "Chargement...";
+                    if (federationsQuery.error) return "Erreur";
+                    return "Aucune federation";
+                  }
+                  const selectedId = String(selected);
+                  return federationOptions.find((federation) => federation.id === selectedId)?.name ?? selectedId;
+                }}
+                onChange={(event) => {
+                  const nextScope = String(event.target.value);
+                  setFederationScope(nextScope);
+                  queryClient.clear();
+                  void queryClient.invalidateQueries();
+                }}
+                disabled={federationsQuery.isLoading || federationOptions.length === 0}
+              >
+                {federationOptions.map((federation) => (
+                  <MenuItem key={federation.id} value={federation.id}>
+                    {federation.name}
+                  </MenuItem>
+                ))}
+              </Select>
+              {federationsQuery.error ? <FormHelperText>{getErrorMessage(federationsQuery.error)}</FormHelperText> : null}
+            </FormControl>
+          ) : null}
           <Typography variant="body2" color="text.secondary" noWrap sx={{ maxWidth: 260, display: { xs: "none", md: "block" } }}>
             {user?.email}
           </Typography>

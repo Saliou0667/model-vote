@@ -1,6 +1,6 @@
 # STATUS.md - Suivi d'avancement du projet
 
-**Derniere mise a jour :** 2026-02-07
+**Derniere mise a jour :** 2026-03-01
 
 ---
 
@@ -59,3 +59,8 @@
 | 2026-02-07 | M5 livre : vote confidentiel transactionnel + UI membre + tests        |
 | 2026-02-07 | M6 livre : resultats + exports + logs + audit + gestion roles          |
 | 2026-02-07 | Hardening livre : Playwright smoke + CI GitHub bloquante               |
+| 2026-02-28 | Belgique: fusion du poste secretaire sport + securite, migration prod et redeploiement |
+| 2026-03-01 | Front membre: menu Scores masque tant que les resultats ne sont pas publies |
+| 2026-03-01 | Front membre: l'ecran Scores restaure l'UI riche (photos/cartes) des que les resultats sont publies |
+| 2026-03-01 | Vote/resultats: "Bulletin blanc" unifie, option de vote blanc ajoutee, carte restauree dans les scores et pourcentages calcules sur le total des bulletins |
+| 2026-03-01 | Belgique prod: reset des scrutins/tests, remise en draft, fenetre 08:00-22:00 Europe/Paris et scheduler automatique Belgique deploye |
